@@ -313,6 +313,7 @@ every client that has ever connected.
 tui-ssh                        # drive the real server
 tui-ssh --demo                 # sample server, no privileges needed
 tui-ssh --check                # read the server, print JSON, exit
+tui-ssh --report               # print what a bug report needs, exit
 tui-ssh --theme ~/mytheme/colors.toml
 tui-ssh --sudo ""              # run the commands directly (as root)
 tui-ssh --version
@@ -351,6 +352,44 @@ permitted, that the tool said so instead of showing an empty screen.
 [tui-lab](https://github.com/tui-tools/tui-lab) uses it to test this tool
 against real machines on Ubuntu, Fedora and Arch; the assertions live in
 [`test/smoke.sh`](test/smoke.sh), and every one of them is read-only.
+
+### `--report`, for bug reports
+
+`--report` prints, in one block, everything a maintainer has to ask for
+otherwise: the tool and kit versions, the backend and the version probed off
+`ssh -V`, which of the keyword spellings that OpenSSH has, the distribution,
+the kernel, the terminal, the theme, the escalation prefix, and whether the
+running binary came from a package. It needs no privileges and reads neither
+the configuration nor the service, so it works on the machine where the bug is
+— including one with no OpenSSH installed at all, where the selection error is
+itself one of the lines.
+
+```console
+$ tui-ssh --report
+tui-ssh 0.1.0 (kit v0.2.9)
+backend: openssh 9.9
+mode: live
+distro: fedora 42 (Fedora Linux 42 (Workstation Edition))
+kernel: 6.19.14-108.fc42.x86_64
+arch: x86_64
+locale: en_US.UTF-8
+term: xterm-256color
+theme: tokyo-night
+sudo: sudo -n
+root: no
+binary: /usr/bin/tui-ssh (packaged)
+features: include-dropins yes, kbd-interactive yes
+```
+
+The block is written to be published as it is. It carries nothing about your
+server — no host key, no address, no port, no setting — and nothing about you:
+no hostname, no user name, no home path, and no environment variable beyond
+`LANG`, `LC_ALL`, `TERM` and `TERM_PROGRAM`. A binary living under your home
+directory is reported as being there without naming the path. `--report` works
+with `--demo` too, where it says so on the `mode` line.
+
+The bug form asks for this block first — see
+[`.github/ISSUE_TEMPLATE/bug_report.yml`](.github/ISSUE_TEMPLATE/bug_report.yml).
 
 ## What it can do to your machine
 
