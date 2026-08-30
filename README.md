@@ -2,6 +2,10 @@
 
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/tui-tools/tui-ssh/badge)](https://scorecard.dev/viewer/?uri=github.com/tui-tools/tui-ssh)
 
+> **Beta.** Beta: the family is days old and still changing. Package names,
+> flags and keys may move without notice until 1.0. Pin versions, and report
+> what breaks.
+
 A terminal UI for the machine's SSH server. It asks `sshd` what its
 configuration **actually is**, shows the settings that decide who gets in with a
 verdict and the file and line that set each one, and **previews the exact
@@ -124,7 +128,7 @@ Upgrades then arrive with the rest of your system updates.
 ### Any distribution, static binary
 
 ```sh
-curl -fsSL https://github.com/tui-tools/tui-ssh/releases/download/v0.1.1/tui-ssh_0.1.1_linux_amd64.tar.gz | tar -xz tui-ssh
+curl -fsSL https://github.com/tui-tools/tui-ssh/releases/download/v0.1.2/tui-ssh_0.1.2_linux_amd64.tar.gz | tar -xz tui-ssh
 sudo install -m0755 tui-ssh /usr/local/bin/tui-ssh
 ```
 
@@ -536,6 +540,17 @@ say so: `sshd -T` needs root, and `sshd_config` is mode 0600 on that host, so
 those fixtures are written from `sshd_config(5)` — one with its `Include` first
 and one with it last, which is the difference the whole editor turns on.
 
+Every parser in `internal/openssh` also carries a Go native fuzz target seeded
+from those fixtures. `go test` replays the seeds on every commit; exploring past
+them is a thing you run, one target at a time:
+
+```sh
+go test -run=^$ -fuzz=FuzzParseAuthLog -fuzztime=5m ./internal/openssh/
+```
+
+A crash writes its input under `internal/openssh/testdata/fuzz/`, and that file
+is committed so the bug cannot come back quietly.
+
 Dependencies are deliberately small: Bubble Tea, Bubbles and
 [tui-kit](https://github.com/tui-tools/tui-kit), which carries the palette, the
 widgets, the config loader and the command runner shared by the whole family.
@@ -559,6 +574,15 @@ widgets, the config loader and the command runner shared by the whole family.
   demanding a password, and the screen says which answer you are looking at.
 - `tui-ssh` re-reads the server after every change, so what you see is what the
   system reports, not what the tool assumed.
+
+## Contributing
+
+Contributions arrive as pull requests: the flow, and the bar a change has to
+clear, are in the family's
+[CONTRIBUTING.md](https://github.com/tui-tools/tui-kit/blob/main/CONTRIBUTING.md).
+A vulnerability is reported privately instead, the way
+[SECURITY.md](https://github.com/tui-tools/tui-kit/blob/main/SECURITY.md)
+describes, and never in a public issue.
 
 ## License
 
