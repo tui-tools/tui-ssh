@@ -58,7 +58,7 @@ func press(a *app, key string) tea.Cmd {
 // gotoScreen moves to a tab by its number key.
 func gotoScreen(t *testing.T, a *app, s screen) {
 	t.Helper()
-	drain(t, a, press(a, string(rune('1'+int(s)))))
+	drain(t, a, press(a, string(rune('1'+int(s))))) //nolint:gosec // s is one of the few screen constants, so the digit key is always a single rune
 	if a.screen != s {
 		t.Fatalf("did not reach the %s screen", s.title())
 	}
