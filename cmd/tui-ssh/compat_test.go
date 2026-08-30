@@ -5,11 +5,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/tui-tools/tui-kit/compat"
 	"github.com/tui-tools/tui-kit/manifest"
+	"github.com/tui-tools/tui-kit/runner"
 	tuissh "github.com/tui-tools/tui-ssh"
 	"github.com/tui-tools/tui-ssh/internal/openssh"
 )
@@ -93,26 +95,40 @@ func TestVersionIsReadFromStandardError(t *testing.T) {
 
 // TestVersionProbeAgainstThisHost runs the real probe when ssh is installed,
 // which is the assertion that the manifest's command and regex still match
-// what the machine prints.
+// what a machine prints — including the part that is easy to get wrong, that
+// the banner arrives on standard error with a non-zero exit.
+//
+// It asserts the shape rather than a number: this runs on whatever OpenSSH the
+// machine happens to carry, and pinning that would only mean the test breaks
+// every time a CI image is refreshed.
 func TestVersionProbeAgainstThisHost(t *testing.T) {
-	if _, err := os.Stat("/usr/bin/ssh"); err != nil {
+	if !runner.Available("ssh", backend(t).SearchPaths...) {
 		t.Skip("no ssh on this machine")
 	}
 	result := compat.Probe(context.Background(), backend(t))
 	if result.Version == "" {
 		t.Fatalf("the probe read no version from this host: %s", result.Detail)
 	}
-	// And it agrees with the fixture captured from the same command.
+	if !versionShape.MatchString(result.Version) {
+		t.Errorf("the probe read %q, which is not an OpenSSH version",
+			result.Version)
+	}
+	if result.Status == compat.StatusUnknown {
+		t.Errorf("a version that was read must not classify as unknown")
+	}
+	// And the captured banner, run through the same regex, parses the same way.
 	raw, err := os.ReadFile(filepath.Join("..", "..", "internal", "openssh",
 		"testdata", "ssh-version.txt"))
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
-	if want := compat.ParseVersion(string(raw), backend(t).VersionRegex); want != result.Version {
-		t.Errorf("the probe read %q and the captured banner says %q",
-			result.Version, want)
+	if got := compat.ParseVersion(string(raw), backend(t).VersionRegex); got != "9.9" {
+		t.Errorf("the captured banner parses as %q, want 9.9", got)
 	}
 }
+
+// versionShape is what an OpenSSH version looks like once the regex has had it.
+var versionShape = regexp.MustCompile(`^[0-9]+\.[0-9]+$`)
 
 // TestFeatureGatesMatchTheReleases pins what the manifest claims: `Include`
 // arrived in 8.2 and the KbdInteractiveAuthentication spelling in 8.7.
