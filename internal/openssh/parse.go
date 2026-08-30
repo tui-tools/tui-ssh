@@ -2,6 +2,7 @@ package openssh
 
 import (
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,13 +29,23 @@ func splitDirective(line string) (key, value string, ok bool) {
 		return "", "", false
 	}
 
-	index := strings.IndexAny(line, " \t=")
+	// A carriage return separates like any other space: a file written on
+	// Windows, or one line of it, would otherwise produce a keyword with a \r
+	// inside it, which is a keyword no lookup matches and a string that walks
+	// the cursor back to column 0 when the file view prints it.
+	index := strings.IndexAny(line, " \t=\r")
 	if index < 0 {
 		// A keyword with no argument. sshd rejects it; the parser still
 		// reports it so the file view can show the line that will fail.
 		return line, "", true
 	}
 	key = line[:index]
+	if key == "" {
+		// A line that opens with '=' has a value and no keyword. sshd rejects
+		// it, and reporting it as a directive would put a nameless row in the
+		// file view and a nameless keyword in the winner table.
+		return "", "", false
+	}
 	value = strings.TrimSpace(line[index:])
 	value = strings.TrimSpace(strings.TrimPrefix(value, "="))
 	return key, value, true
@@ -483,10 +494,11 @@ func ParseShowSession(out string) (ssh.Session, bool) {
 	properties := map[string]string{}
 	for _, line := range strings.Split(out, "\n") {
 		key, value, found := strings.Cut(strings.TrimSpace(line), "=")
-		if !found {
+		key = strings.TrimSpace(key)
+		if !found || key == "" {
 			continue
 		}
-		properties[key] = value
+		properties[key] = strings.TrimSpace(value)
 	}
 
 	service := properties["Service"]
@@ -502,10 +514,15 @@ func ParseShowSession(out string) (ssh.Session, bool) {
 		Since:    properties["Timestamp"],
 		State:    properties["State"],
 	}
+	if session.ID == "" {
+		// Without an id there is nothing to terminate and nothing to join the
+		// socket table on, so the block is not a session this screen can use.
+		return ssh.Session{}, false
+	}
 	if leader, err := strconv.Atoi(properties["Leader"]); err == nil {
 		session.Leader = leader
 	}
-	return session, session.ID != ""
+	return session, true
 }
 
 // ParseSSConnections reads established connections out of `ss -tnpH`.
@@ -566,7 +583,10 @@ func splitHostPort(text string) (host string, port int, ok bool) {
 	}
 	host = strings.Trim(text[:index], "[]")
 	port, err := strconv.Atoi(text[index+1:])
-	if err != nil {
+	// A number a socket cannot carry is not a port, so the field it came from
+	// was not an address:port at all and the row is skipped rather than shown
+	// with a port nothing is listening on.
+	if err != nil || port < 0 || port > 65535 {
 		return "", 0, false
 	}
 	return host, port, true
@@ -676,13 +696,18 @@ func ParseProperties(out string) map[string]string {
 	properties := map[string]string{}
 	for _, line := range strings.Split(out, "\n") {
 		key, value, found := strings.Cut(strings.TrimSpace(line), "=")
-		if !found {
+		key = strings.TrimSpace(key)
+		if !found || key == "" {
 			continue
 		}
-		properties[key] = value
+		properties[key] = strings.TrimSpace(value)
 	}
 	return properties
 }
+
+// keyTypeRe is the algorithm ssh-keygen prints in parentheses at the end of a
+// fingerprint line.
+var keyTypeRe = regexp.MustCompile(`^\([A-Za-z0-9_-]+\)$`)
 
 // ParseFingerprint reads one line of `ssh-keygen -lf`, which is
 // `256 SHA256:… comment (ED25519)`.
@@ -695,8 +720,11 @@ func ParseFingerprint(path, out string) (ssh.HostKey, bool) {
 	if bits, err := strconv.Atoi(fields[0]); err == nil {
 		key.Bits = bits
 	}
+	// ssh-keygen closes the line with the algorithm in parentheses: (ED25519),
+	// (RSA), (ECDSA). Anything else in that position is part of the comment,
+	// which is where an unrecognised last word belongs.
 	last := fields[len(fields)-1]
-	if strings.HasPrefix(last, "(") && strings.HasSuffix(last, ")") {
+	if keyTypeRe.MatchString(last) {
 		key.Type = strings.Trim(last, "()")
 		fields = fields[:len(fields)-1]
 	}
@@ -800,7 +828,9 @@ func wordAfter(line, marker string) string {
 	if !found {
 		return ""
 	}
-	return strings.Fields(rest + " ")[0]
+	// A line truncated right after the marker leaves nothing to name, so the
+	// method stays blank rather than being read out of an empty field list.
+	return firstField(rest)
 }
 
 // userFrom pulls the account out of an authentication line. sshd writes it
