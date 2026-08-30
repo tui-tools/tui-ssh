@@ -27,7 +27,7 @@ import (
 // whole editor turns on.
 func fixture(t *testing.T, name string) string {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join("testdata", name))
+	raw, err := os.ReadFile(filepath.Join("testdata", name)) //nolint:gosec // every name is a literal in the tests below, and testdata is in the repository
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}

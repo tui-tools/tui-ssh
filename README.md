@@ -1,5 +1,7 @@
 <img src="assets/logo.png" alt="tui-ssh" width="240">
 
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/tui-tools/tui-ssh/badge)](https://scorecard.dev/viewer/?uri=github.com/tui-tools/tui-ssh)
+
 A terminal UI for the machine's SSH server. It asks `sshd` what its
 configuration **actually is**, shows the settings that decide who gets in with a
 verdict and the file and line that set each one, and **previews the exact
