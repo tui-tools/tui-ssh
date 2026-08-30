@@ -1,0 +1,5 @@
+# Shipped by the distribution.
+
+SyslogFacility AUTHPRIV
+GSSAPIAuthentication yes
+PasswordAuthentication no

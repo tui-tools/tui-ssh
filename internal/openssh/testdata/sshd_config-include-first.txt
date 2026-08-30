@@ -1,0 +1,31 @@
+#	$OpenBSD: sshd_config,v 1.104 2021/07/02 05:11:21 dtucker Exp $
+
+# This is the sshd server system-wide configuration file.  See
+# sshd_config(5) for more information.
+
+Include /etc/ssh/sshd_config.d/*.conf
+
+Port 22
+#AddressFamily any
+ListenAddress 0.0.0.0
+
+PermitRootLogin prohibit-password
+MaxAuthTries 6
+LoginGraceTime 2m
+
+PubkeyAuthentication yes
+PasswordAuthentication yes
+KbdInteractiveAuthentication yes
+PermitEmptyPasswords no
+UsePAM yes
+
+X11Forwarding yes
+AllowTcpForwarding yes
+ClientAliveInterval 0
+
+Subsystem	sftp	/usr/libexec/openssh/sftp-server
+
+Match Group sftponly
+	ChrootDirectory /srv/sftp
+	PasswordAuthentication yes
+	AllowTcpForwarding no

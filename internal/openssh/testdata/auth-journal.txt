@@ -1,0 +1,10 @@
+2026-08-29T02:14:03+0000 host sshd[20101]: Invalid user admin from 203.0.113.7 port 40001
+2026-08-29T02:14:03+0000 host sshd[20101]: Failed password for invalid user admin from 203.0.113.7 port 40001 ssh2
+2026-08-29T02:14:07+0000 host sshd[20101]: Connection closed by invalid user admin 203.0.113.7 port 40001 [preauth]
+2026-08-29T02:16:41+0000 host sshd[20114]: Failed password for root from 203.0.113.7 port 40002 ssh2
+2026-08-29T02:16:44+0000 host sshd[20114]: error: maximum authentication attempts exceeded for root from 203.0.113.7 port 40002 ssh2 [preauth]
+2026-08-29T03:02:11+0000 host sshd[20488]: Invalid user oracle from 198.51.100.23 port 51188
+2026-08-29T03:02:11+0000 host sshd[20488]: Failed password for invalid user oracle from 198.51.100.23 port 51188 ssh2
+2026-08-29T08:41:19+0000 host sshd[4711]: Accepted publickey for deploy from 203.0.113.42 port 51422 ssh2: ED25519 SHA256:t1Q9lqYb2xW
+2026-08-29T08:41:19+0000 host sshd[4711]: pam_unix(sshd:session): session opened for user deploy(uid=1001) by deploy(uid=0)
+2026-08-29T11:15:03+0000 host sshd[5901]: Accepted password for backup from 192.0.2.10 port 33210 ssh2

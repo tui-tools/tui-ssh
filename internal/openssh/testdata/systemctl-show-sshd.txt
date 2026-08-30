@@ -1,0 +1,4 @@
+LoadState=loaded
+ActiveState=active
+UnitFileState=enabled
+ActiveEnterTimestamp=Wed 2026-08-19 12:41:01 -03

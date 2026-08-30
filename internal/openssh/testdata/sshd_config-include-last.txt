@@ -1,0 +1,10 @@
+# A configuration whose Include is at the bottom, which is where a drop-in
+# loses: sshd takes the first value it is given, so PasswordAuthentication
+# below wins over anything /etc/ssh/sshd_config.d says.
+
+Port 22
+PermitRootLogin no
+PasswordAuthentication yes
+PubkeyAuthentication yes
+
+Include /etc/ssh/sshd_config.d/*.conf

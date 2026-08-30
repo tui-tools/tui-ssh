@@ -1,0 +1,2 @@
+2 1000 ana seat0 5213 user    tty2 yes 1h 41min ago
+3 1000 ana -     5690 manager -    no  -

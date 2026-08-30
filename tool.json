@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
-  "name": "tui-template",
-  "binary": "tui-template",
-  "tagline": "A working skeleton for a new tui-tools tool",
-  "description": "The starting point for a new tool in the family. Press **Use this template**, rename it, replace one package, and you have a tool that looks and behaves like the rest.\n\nIt is not a pile of TODOs: it is a working tool. It lists the files in a directory and can update a file's timestamp, which is deliberately trivial — what matters is the shape around it, and that shape is already correct: the action table that generates the key map, the help screen and the confirm dialog; the backend interface with a real and a fake implementation; `--demo`; CI; and GoReleaser.\n\nThis `tool.json` is itself the example. It is a valid manifest, validated against [the schema](https://github.com/tui-tools/tui-kit/blob/main/schema/tool.schema.json) on every CI run, and the values are the ones you replace.",
-  "category": "template",
-  "homepage": "https://github.com/tui-tools/tui-template",
-  "repo": "https://github.com/tui-tools/tui-template",
+  "name": "tui-ssh",
+  "binary": "tui-ssh",
+  "tagline": "The SSH server as it really is, with every change previewed before it runs",
+  "description": "A terminal UI for the machine's SSH server. It asks sshd what its configuration actually is — `sshd -T`, not what a file says — and shows the settings that decide who gets in first, each with a verdict and the file and line that set it.\n\nFour more screens complete the picture: who is logged in right now and a way to end a session; what the authentication log says over the last day or week, with the addresses and accounts being tried; the host keys and their fingerprints; and the unit, its sockets and whether a brute-force blocker is installed.\n\nChanges go to a drop-in: tui-ssh never rewrites /etc/ssh/sshd_config. It writes 90-tui-ssh.conf, checks the staged file with `sshd -t -f` before asking anything, and shows the diff and both commands. sshd takes the first value it is given, so the include order is read too: if another file already sets the keyword earlier, the tool says so instead of writing a line that would be ignored.\n\nRun `tui-ssh --demo` to drive a sample server: every key works, every command is built and previewed for real, and nothing touches your system.",
+  "category": "ssh",
+  "homepage": "https://github.com/tui-tools/tui-ssh",
+  "repo": "https://github.com/tui-tools/tui-ssh",
   "license": "MIT",
   "platforms": [
     "linux/amd64",
@@ -16,30 +16,70 @@
   "logo": "assets/logo.png",
   "screenshots": [
     {
-      "path": "docs/screenshots/tui-template-main.png",
-      "caption": "The list: the four bands every tool in the family draws"
+      "path": "docs/screenshots/tui-ssh-main.png",
+      "caption": "The effective configuration: the settings that decide who gets in, each with a verdict and the file that set it"
     },
     {
-      "path": "docs/screenshots/tui-template-touch.png",
-      "caption": "The confirm dialog, showing the exact command line before it runs"
+      "path": "docs/screenshots/tui-ssh-sessions.png",
+      "caption": "Who is logged in right now: the account, the address it came from, and the session that can be ended"
     },
     {
-      "path": "docs/screenshots/tui-template-help.png",
-      "caption": "The help screen, generated from the action table"
+      "path": "docs/screenshots/tui-ssh-auth.png",
+      "caption": "The authentication log: accepted, failed and invalid-user counts, with the addresses and accounts being tried"
+    },
+    {
+      "path": "docs/screenshots/tui-ssh-edit.png",
+      "caption": "The guided editor: one keyword, the values sshd accepts, and what the change means"
+    },
+    {
+      "path": "docs/screenshots/tui-ssh-diff.png",
+      "caption": "Writing that drop-in: sshd has already parsed the staged file, and the diff and both commands are on screen before either runs"
+    },
+    {
+      "path": "docs/screenshots/tui-ssh-help.png",
+      "caption": "The help screen, generated from the same key table as the hint bar"
     }
   ],
   "keys": [
     {
+      "key": "tab / 1-5",
+      "action": "Move between config, sessions, auth log, host keys and service"
+    },
+    {
+      "key": "enter",
+      "action": "Open the selected row in full"
+    },
+    {
+      "key": "e",
+      "action": "Change the selected setting, written to a drop-in with a diff to confirm"
+    },
+    {
       "key": "t",
-      "action": "Touch the selected file"
+      "action": "End the selected session"
+    },
+    {
+      "key": "b",
+      "action": "Block the selected address at the firewall"
+    },
+    {
+      "key": "w",
+      "action": "Switch the log window between the last 24 hours and 7 days"
+    },
+    {
+      "key": "K",
+      "action": "Regenerate the server's host keys, old ones moved aside"
+    },
+    {
+      "key": "r",
+      "action": "Reload the SSH service"
     },
     {
       "key": "/",
-      "action": "Filter the list"
+      "action": "Filter the rows of the current screen"
     },
     {
-      "key": "r / ctrl+r",
-      "action": "Re-read the directory"
+      "key": "R",
+      "action": "Re-read the server"
     },
     {
       "key": "?",
@@ -52,84 +92,114 @@
   ],
   "backends": [
     {
-      "name": "coreutils",
-      "binary": "touch",
+      "name": "openssh",
+      "binary": "ssh",
       "versionCommand": [
-        "touch",
-        "--version"
+        "ssh",
+        "-V"
       ],
-      "versionRegex": "coreutils\\) ([0-9][0-9.]*)",
-      "minimum": "8.0",
+      "versionRegex": "OpenSSH_(\\d+\\.\\d+)",
+      "minimum": "8.2",
       "searchPaths": [
-        "/usr/bin/touch",
-        "/bin/touch"
+        "/usr/bin/ssh",
+        "/bin/ssh"
       ],
       "features": [
         {
-          "name": "no-dereference",
-          "since": "8.1"
+          "name": "include-dropins",
+          "since": "8.2"
+        },
+        {
+          "name": "kbd-interactive",
+          "since": "8.7"
         }
       ],
       "notes": [
         {
-          "range": "<8.1",
-          "impact": "`touch -h` is missing, so the timestamp of a symlink is set on its target instead of on the link"
+          "range": ">=8.2",
+          "impact": "the version comes from `ssh -V`, which prints to standard error; `sshd -V` only exists from OpenSSH 9.6, so asking the server itself would report nothing over most of the supported range"
+        },
+        {
+          "range": "<8.2",
+          "impact": "`Include` does not exist, so /etc/ssh/sshd_config.d is never read; tui-ssh will not rewrite sshd_config itself, so the editor has nowhere to write and says so"
+        },
+        {
+          "range": "<8.7",
+          "impact": "`KbdInteractiveAuthentication` is still spelled `ChallengeResponseAuthentication`; both are read, and the old name is what gets written"
         }
-      ]
+      ],
+      "tested": []
     }
   ],
   "install": {
-    "source": {
-      "available": true,
-      "command": "git clone https://github.com/tui-tools/tui-template\ncd tui-template && make demo",
-      "url": "https://github.com/tui-tools/tui-template",
-      "note": "Or press \"Use this template\" on GitHub, which is the point of it."
-    },
     "pacman": {
       "available": false,
-      "package": "tui-template",
+      "package": "tui-ssh",
       "repo": "tui-tools",
       "requires_repo_setup": true,
-      "command": "sudo pacman -S tui-template",
+      "command": "sudo pacman -S tui-ssh",
       "url": "https://pkgs.tui.tools/arch",
-      "note": "The template is never packaged. This entry shows your tool's shape."
+      "note": "Add the tui-tools repository to pacman.conf first."
+    },
+    "aur": {
+      "available": false,
+      "package": "tui-ssh-bin",
+      "repo": "aur",
+      "command": "paru -S tui-ssh-bin",
+      "url": "https://aur.archlinux.org/packages/tui-ssh-bin",
+      "note": "The -bin package installs the released static binary."
     },
     "apt": {
       "available": false,
-      "package": "tui-template",
+      "package": "tui-ssh",
       "repo": "tui-tools",
       "requires_repo_setup": true,
-      "command": "sudo apt install tui-template",
+      "command": "sudo apt install tui-ssh",
       "url": "https://pkgs.tui.tools/deb",
-      "note": "The template is never packaged. This entry shows your tool's shape."
+      "note": "Add the tui-tools apt repository and its keyring first."
     },
     "dnf": {
       "available": false,
-      "package": "tui-template",
+      "package": "tui-ssh",
       "repo": "tui-tools",
       "requires_repo_setup": true,
-      "command": "sudo dnf install tui-template",
+      "command": "sudo dnf install tui-ssh",
       "url": "https://pkgs.tui.tools/rpm",
-      "note": "The template is never packaged. This entry shows your tool's shape."
+      "note": "Add the tui-tools.repo file first."
+    },
+    "zypper": {
+      "available": false,
+      "package": "tui-ssh",
+      "repo": "tui-tools",
+      "requires_repo_setup": true,
+      "command": "sudo zypper install tui-ssh",
+      "url": "https://pkgs.tui.tools/rpm",
+      "note": "Add the tui-tools repository first."
     },
     "binary": {
-      "available": false,
-      "pattern": "tui-template_{version}_linux_{arch}.tar.gz",
-      "command": "curl -fsSL https://github.com/tui-tools/tui-template/releases/download/v{version}/tui-template_{version}_linux_{arch}.tar.gz | tar -xz tui-template\nsudo install -m0755 tui-template /usr/local/bin/tui-template",
-      "url": "https://github.com/tui-tools/tui-template/releases",
-      "note": "The template is never released. Your tool is, once you tag v0.1.0."
+      "available": true,
+      "pattern": "tui-ssh_{version}_linux_{arch}.tar.gz",
+      "command": "curl -fsSL https://github.com/tui-tools/tui-ssh/releases/download/v{version}/tui-ssh_{version}_linux_{arch}.tar.gz | tar -xz tui-ssh\nsudo install -m0755 tui-ssh /usr/local/bin/tui-ssh",
+      "url": "https://github.com/tui-tools/tui-ssh/releases",
+      "note": "One static binary. Verify it against checksums.txt from the same release."
+    },
+    "source": {
+      "available": true,
+      "command": "git clone https://github.com/tui-tools/tui-ssh\ncd tui-ssh && make build\nsudo install -m0755 bin/tui-ssh /usr/local/bin/tui-ssh",
+      "url": "https://github.com/tui-tools/tui-ssh",
+      "note": "Needs Go 1.27 or newer."
     }
   },
   "security": {
-    "needs_sudo": "Only the touch action escalates, and only when the configured prefix is non-empty. Listing a directory is an ordinary read. Replace this sentence with what your own tool escalates for.",
+    "needs_sudo": "Two reads escalate through `sudo -n`, which never prompts: `sshd -T`, and `cat` for an sshd_config that Fedora and Arch ship mode 0600. Both fall back rather than demand a password, and the header says which answer is on screen. Every change escalates too.",
     "preview_before_run": true,
     "no_daemon": true,
     "no_network": true,
     "static_binary": true,
     "signed_releases": false,
     "config_paths": [
-      "/etc/tui-template/config.toml",
-      "~/.config/tui-template/config.toml"
+      "/etc/tui-ssh/config.toml",
+      "~/.config/tui-ssh/config.toml"
     ]
   },
   "maintainers": [
@@ -140,10 +210,15 @@
   ],
   "since": "2026-08-29",
   "keywords": [
-    "template",
-    "scaffold",
-    "bubbletea",
-    "starter"
-  ],
-  "unreleased": true
+    "ssh",
+    "sshd",
+    "openssh",
+    "sshd_config",
+    "hardening",
+    "sessions",
+    "host-keys",
+    "auth-log",
+    "tui",
+    "bubbletea"
+  ]
 }
