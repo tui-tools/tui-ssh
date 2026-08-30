@@ -16,7 +16,8 @@ func TestVerdicts(t *testing.T) {
 		want       ssh.Verdict
 	}{
 		{"PermitRootLogin", "no", ssh.VerdictOK},
-		{"PermitRootLogin", "prohibit-password", ssh.VerdictWarn},
+		{"PermitRootLogin", "prohibit-password", ssh.VerdictOK},
+		{"PermitRootLogin", "forced-commands-only", ssh.VerdictOK},
 		{"PermitRootLogin", "yes", ssh.VerdictRisk},
 		{"PasswordAuthentication", "no", ssh.VerdictOK},
 		{"PasswordAuthentication", "yes", ssh.VerdictRisk},
@@ -35,7 +36,7 @@ func TestVerdicts(t *testing.T) {
 		{"X11Forwarding", "no", ssh.VerdictOK},
 		{"X11Forwarding", "yes", ssh.VerdictWarn},
 		{"AllowTcpForwarding", "no", ssh.VerdictOK},
-		{"AllowTcpForwarding", "yes", ssh.VerdictWarn},
+		{"AllowTcpForwarding", "yes", ssh.VerdictNone},
 		{"ClientAliveInterval", "300", ssh.VerdictOK},
 		{"ClientAliveInterval", "0", ssh.VerdictWarn},
 		{"AllowUsers", "ana deploy", ssh.VerdictOK},

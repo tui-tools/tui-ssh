@@ -25,7 +25,7 @@ screen, in the [Omarchy](https://omarchy.org) visual style.
 ### Any distribution, static binary
 
 ```sh
-curl -fsSL https://github.com/tui-tools/tui-ssh/releases/download/v{version}/tui-ssh_{version}_linux_amd64.tar.gz | tar -xz tui-ssh
+curl -fsSL https://github.com/tui-tools/tui-ssh/releases/download/v0.1.0/tui-ssh_0.1.0_linux_amd64.tar.gz | tar -xz tui-ssh
 sudo install -m0755 tui-ssh /usr/local/bin/tui-ssh
 ```
 
@@ -138,6 +138,14 @@ question you arrive with is "can root log in with a password" and the answer to
 that should not be six screens down between `MaxSessions` and `PermitTTY`. Each
 one carries a verdict — `ok`, `!`, `!!` — and one sentence you can argue with.
 Everything else in the file follows, unjudged.
+
+Two of those opinions are deliberately quieter than a hardening checklist would
+have them. `PermitRootLogin prohibit-password` is `ok`: root by key only is the
+default a great many distributions ship and there is no password to guess at, so
+only `yes` is a finding. `AllowTcpForwarding yes` carries **no** verdict at all —
+it is the OpenSSH default and what nearly every machine runs. It stays on the
+list with its consequence spelled out, because a list that flags what everybody
+runs teaches you to stop reading the list.
 
 If `sshd -T` cannot run — no `sudo -n`, or a configuration sshd refuses to
 parse — the files are read instead and the header says `config: from files`
@@ -260,9 +268,9 @@ $ tui-ssh --check | head -14
     {
       "key": "PermitRootLogin",
       "value": "prohibit-password",
-      "verdict": "warn",
+      "verdict": "ok",
       "source": "/etc/ssh/sshd_config:8",
-      "note": "root can still log in, by key only. `no` keeps root out entirely."
+      "note": "root by key only; no password can be guessed into the account."
     },
 ```
 
@@ -384,11 +392,12 @@ hidden; one below the minimum is marked as such and the tool still runs.
 | Binary | `ssh` |
 | Version read with | `ssh -V` |
 | Minimum | 8.2 |
-| Tested | none yet |
+| Tested | `9.6`, `10.2`, `10.5` |
 | Version-gated features | `include-dropins` (since 8.2), `kbd-interactive` (since 8.7) |
 
 | Versions | What changes |
 | --- | --- |
+| `>=10.5` | `sshd -T` prints the canonical spelling of every keyword (`PermitRootLogin no`) where 10.2 and earlier lower-case it (`permitrootlogin no`); both forms are parsed to the canonical name, so the verdicts and the source lines are the same either way |
 | `>=8.2` | the version comes from `ssh -V`, which prints to standard error; `sshd -V` only exists from OpenSSH 9.6, so asking the server itself would report nothing over most of the supported range |
 | `<8.2` | `Include` does not exist, so /etc/ssh/sshd_config.d is never read; tui-ssh will not rewrite sshd_config itself, so the editor has nowhere to write and says so |
 | `<8.7` | `KbdInteractiveAuthentication` is still spelled `ChallengeResponseAuthentication`; both are read, and the old name is what gets written |

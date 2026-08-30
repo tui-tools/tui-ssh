@@ -116,6 +116,10 @@
       ],
       "notes": [
         {
+          "range": ">=10.5",
+          "impact": "`sshd -T` prints the canonical spelling of every keyword (`PermitRootLogin no`) where 10.2 and earlier lower-case it (`permitrootlogin no`); both forms are parsed to the canonical name, so the verdicts and the source lines are the same either way"
+        },
+        {
           "range": ">=8.2",
           "impact": "the version comes from `ssh -V`, which prints to standard error; `sshd -V` only exists from OpenSSH 9.6, so asking the server itself would report nothing over most of the supported range"
         },
@@ -128,7 +132,11 @@
           "impact": "`KbdInteractiveAuthentication` is still spelled `ChallengeResponseAuthentication`; both are read, and the old name is what gets written"
         }
       ],
-      "tested": []
+      "tested": [
+        "9.6",
+        "10.2",
+        "10.5"
+      ]
     }
   ],
   "install": {

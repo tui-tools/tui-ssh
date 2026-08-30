@@ -188,11 +188,22 @@ case "$privileged" in
       '"effective": true'
 
     # And it agrees with sshd itself, asked directly.
-    want=$(sudo -n sshd -T 2>/dev/null | sed -n 's/^permitrootlogin //p' | head -1)
+    #
+    # The keyword is matched case-insensitively because sshd changed how it
+    # prints one. Through OpenSSH 10.2 `sshd -T` lower-cases every keyword
+    # (`permitrootlogin no`); 10.5 prints the canonical spelling instead
+    # (`PermitRootLogin no`). A lowercase-only match here found nothing on
+    # Omarchy Server 4.0.1 and quietly skipped the strongest assertion in this
+    # file, on the one machine in the lab that keeps root out entirely.
+    want=$(sudo -n sshd -T 2>/dev/null |
+      sed -n 's/^[Pp]ermit[Rr]oot[Ll]ogin //p' | head -1)
     if [[ -n $want ]]; then
       check "PermitRootLogin matches \`sshd -T\` ($want)" \
         "$bin --check" \
         "\"value\": \"$want\""
+    else
+      printf 'FAIL  sshd -T printed no PermitRootLogin line to compare against\n'
+      fail=$((fail + 1))
     fi
     ;;
 

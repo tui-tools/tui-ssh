@@ -403,3 +403,51 @@ func paths(files []ssh.ConfigFile) []string {
 	}
 	return out
 }
+
+// TestParseEffectiveOpenSSH105CamelCase: OpenSSH 10.5 changed what `sshd -T`
+// prints. Through 10.2 every keyword came back lower-cased — `permitrootlogin
+// prohibit-password` — and 10.5 prints the canonical spelling instead:
+// `PermitRootLogin no`. The lab found it on Omarchy Server 4.0.1; Ubuntu's 9.6
+// and Fedora's 10.2 still print the old form, so both have to parse.
+//
+// The fixture is a real `sshd -T` captured from that machine.
+func TestParseEffectiveOpenSSH105CamelCase(t *testing.T) {
+	settings := ParseEffective(fixture(t, "sshd-T-openssh105.txt"))
+	byKey := map[string]ssh.Setting{}
+	for _, setting := range settings {
+		byKey[setting.Key] = setting
+	}
+
+	for key, want := range map[string]string{
+		"PermitRootLogin":        "no",
+		"PasswordAuthentication": "no",
+		"AllowTcpForwarding":     "yes",
+		"MaxAuthTries":           "6",
+		"Port":                   "22",
+	} {
+		if got := byKey[key].Value; got != want {
+			t.Errorf("%s = %q, want %q", key, got, want)
+		}
+		if !byKey[key].Effective {
+			t.Errorf("%s did not come back marked as effective", key)
+		}
+	}
+
+	// The keys must be the canonical spelling whichever case sshd used, or a
+	// verdict table keyed on the canonical name would judge nothing at all.
+	judged := Judge(settings)
+	var opinions int
+	for _, setting := range judged {
+		if setting.Verdict != ssh.VerdictNone {
+			opinions++
+		}
+	}
+	if opinions == 0 {
+		t.Error("nothing was judged: the CamelCase keys did not canonicalise")
+	}
+
+	// And the folding of a repeated keyword survives the new case too.
+	if got := byKey["ListenAddress"].Value; got != "[::]:22 0.0.0.0:22" {
+		t.Errorf("ListenAddress = %q, want both addresses folded into one row", got)
+	}
+}

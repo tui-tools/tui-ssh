@@ -34,8 +34,11 @@ func verdictFor(key, value string) (ssh.Verdict, string) {
 		case "no":
 			return ssh.VerdictOK, ""
 		case "prohibit-password", "without-password", "forced-commands-only":
-			return ssh.VerdictWarn,
-				"root can still log in, by key only. `no` keeps root out entirely."
+			// Key-only root is the OpenSSH default on most distributions and an
+			// accepted way to run a machine: a password cannot be guessed into
+			// this account. Only `yes` reopens that door.
+			return ssh.VerdictOK,
+				"root by key only; no password can be guessed into the account."
 		case "yes":
 			return ssh.VerdictRisk,
 				"root can log in directly, with a password. Every attacker knows " +
@@ -141,7 +144,10 @@ func verdictFor(key, value string) (ssh.Verdict, string) {
 		if normalized == "no" {
 			return ssh.VerdictOK, "this host cannot be used as a tunnel."
 		}
-		return ssh.VerdictWarn,
+		// `yes` is the OpenSSH default and what nearly every machine runs, so
+		// flagging it only taught readers to ignore the list. The setting stays
+		// listed, with the consequence spelled out and no verdict attached.
+		return ssh.VerdictNone,
 			"anyone who can log in can tunnel to anything this host can reach."
 
 	case "ClientAliveInterval":

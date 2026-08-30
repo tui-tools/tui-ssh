@@ -212,7 +212,13 @@ func TestNotesCoverTheRanges(t *testing.T) {
 			t.Errorf("note %q has no impact sentence", note.Range)
 		}
 		var matched bool
-		for _, version := range []string{"8.1", "8.2", "8.6", "8.7", "9.9"} {
+		// The sample spans the range the family targets, and now reaches
+		// past 10.0: the lab runs OpenSSH 10.2 on Fedora 44 and 10.5 on
+		// Omarchy Server, and a list that stopped at 9.9 would call a note
+		// about 10.5 dead documentation.
+		for _, version := range []string{
+			"8.1", "8.2", "8.6", "8.7", "9.9", "10.2", "10.5",
+		} {
 			if compat.Match(version, note.Range) {
 				matched = true
 			}
