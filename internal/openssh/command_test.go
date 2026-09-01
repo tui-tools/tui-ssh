@@ -282,6 +282,140 @@ func TestRenderDropIn(t *testing.T) {
 	}
 }
 
+// TestRenderMatchDropInKeepsMatchBlocksLast is the rule the whole Match
+// renderer exists for: sshd reads everything after a Match line as part of that
+// block, so a keyword written at file scope after one would silently apply to
+// some connections only. However the two editors are used, and in whatever
+// order, the generated file puts every file-scope keyword first.
+func TestRenderMatchDropInKeepsMatchBlocksLast(t *testing.T) {
+	withMatch, err := RenderMatchDropIn("", MatchUser, "ana",
+		"PasswordAuthentication", "no")
+	if err != nil {
+		t.Fatalf("RenderMatchDropIn: %v", err)
+	}
+	if !strings.Contains(withMatch, "\nMatch User ana\n") {
+		t.Fatalf("the block was not written:\n%s", withMatch)
+	}
+
+	// Now a file-scope keyword, written after the block already exists.
+	both, err := RenderDropIn(withMatch, "PermitRootLogin", "no")
+	if err != nil {
+		t.Fatalf("RenderDropIn: %v", err)
+	}
+	scope := strings.Index(both, "PermitRootLogin no")
+	match := strings.Index(both, "Match User ana")
+	if scope < 0 || match < 0 {
+		t.Fatalf("the second write lost something:\n%s", both)
+	}
+	if scope > match {
+		t.Errorf("a file-scope keyword was written after a Match block, so sshd "+
+			"would read it as part of the block:\n%s", both)
+	}
+
+	// A second block joins the first rather than replacing it, and the keyword
+	// inside one block does not touch the same keyword at file scope.
+	three, err := RenderMatchDropIn(both, MatchAddress, "203.0.113.0/24",
+		"PermitRootLogin", "yes")
+	if err != nil {
+		t.Fatalf("RenderMatchDropIn: %v", err)
+	}
+	if strings.Count(three, "Match ") != 2 {
+		t.Errorf("the file carries %d Match blocks, want 2:\n%s",
+			strings.Count(three, "Match "), three)
+	}
+	if !strings.Contains(three, "\nPermitRootLogin no\n") {
+		t.Errorf("the file-scope value was rewritten by a Match block:\n%s", three)
+	}
+	if strings.Index(three, "Match User ana") > strings.Index(three,
+		"Match Address 203.0.113.0/24") {
+		t.Errorf("the blocks were reordered:\n%s", three)
+	}
+
+	// Setting the same keyword in the same block replaces the line rather than
+	// appending a second one sshd would silently ignore.
+	again, err := RenderMatchDropIn(three, MatchUser, "ana",
+		"PasswordAuthentication", "yes")
+	if err != nil {
+		t.Fatalf("RenderMatchDropIn: %v", err)
+	}
+	if count := strings.Count(again, "PasswordAuthentication"); count != 1 {
+		t.Errorf("PasswordAuthentication appears %d times:\n%s", count, again)
+	}
+
+	// And what was written parses back into the same blocks: the file the form
+	// writes is a file this tool can read.
+	blocks := parseDropInBlocks(again)
+	if len(blocks) != 3 {
+		t.Fatalf("round trip = %d blocks, want the file scope and two Match", len(blocks))
+	}
+	if blocks[1].criteria != "User ana" ||
+		blocks[2].criteria != "Address 203.0.113.0/24" {
+		t.Errorf("round trip criteria = %q, %q", blocks[1].criteria, blocks[2].criteria)
+	}
+	if len(blocks[0].settings) != 1 {
+		t.Errorf("the file scope round-tripped as %+v", blocks[0].settings)
+	}
+}
+
+func TestRenderMatchDropInRefusesWhatSshdWould(t *testing.T) {
+	// The value goes through exactly the same validator the file-scope editor
+	// uses, so the Match form cannot approve something that form would refuse.
+	if _, err := RenderMatchDropIn("", MatchUser, "ana",
+		"PermitRootLogin", "maybe"); err == nil {
+		t.Errorf("RenderMatchDropIn accepted a value sshd would refuse")
+	}
+	if _, err := RenderMatchDropIn("", MatchUser, "ana",
+		"ForceCommand", "/bin/true"); err == nil {
+		t.Errorf("RenderMatchDropIn accepted a keyword the editor does not offer")
+	}
+}
+
+func TestMatchCriteria(t *testing.T) {
+	ok := map[string]string{
+		MatchUser + " ana":                        "User ana",
+		MatchUser + " ana,deploy":                 "User ana,deploy",
+		MatchGroup + " wheel":                     "Group wheel",
+		MatchAddress + " 203.0.113.7":             "Address 203.0.113.7",
+		MatchAddress + " 203.0.113.0/24":          "Address 203.0.113.0/24",
+		MatchAddress + " 2001:db8::/32":           "Address 2001:db8::/32",
+		MatchAddress + " 10.0.0.0/8,!10.1.0.0/16": "Address 10.0.0.0/8,!10.1.0.0/16",
+		// The criteria name is matched the way sshd matches keywords.
+		"user ana": "User ana",
+	}
+	for input, want := range ok {
+		parts := strings.SplitN(input, " ", 2)
+		got, err := MatchCriteria(parts[0], parts[1])
+		if err != nil {
+			t.Errorf("MatchCriteria(%q) = %v", input, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("MatchCriteria(%q) = %q, want %q", input, got, want)
+		}
+	}
+
+	bad := [][2]string{
+		{MatchUser, ""},
+		// A space would end the criteria and start a keyword, and a # would
+		// comment the rest of the line out.
+		{MatchUser, "ana deploy"},
+		{MatchUser, "ana # and"},
+		{MatchUser, "ana\nPermitRootLogin yes"},
+		// An address that looks fine and selects nothing.
+		{MatchAddress, "10.0"},
+		{MatchAddress, "203.0.113.0/33"},
+		{MatchAddress, "not-an-address"},
+		// A criteria sshd has but this form cannot check.
+		{"LocalPort", "22"},
+		{"", "ana"},
+	}
+	for _, pair := range bad {
+		if got, err := MatchCriteria(pair[0], pair[1]); err == nil {
+			t.Errorf("MatchCriteria(%q, %q) accepted it as %q", pair[0], pair[1], got)
+		}
+	}
+}
+
 func TestDiff(t *testing.T) {
 	before, err := RenderDropIn("", "PasswordAuthentication", "yes")
 	if err != nil {

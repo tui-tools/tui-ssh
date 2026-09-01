@@ -259,6 +259,31 @@ believed to put it in the same place, but that has not been verified here and
 nothing in the tool depends on it — the include order is read from the machine
 in front of you on every start, and it is what the warning is computed from.
 
+### `Match` blocks, and why they go last
+
+`m` opens the same editor with two fields in front of it: what the block selects
+on — `User`, `Group` or `Address` — and the value it selects. The keyword list
+and the validators are the ones the file-scope editor uses, so a value sshd
+would refuse is refused here too, and the criteria is checked as well: a
+`Match Address 10.0` looks fine, selects nothing, and is a mistake you would
+otherwise find later.
+
+The generated file keeps **every file-scope keyword above every `Match` block**,
+whichever order you write them in. That is not tidiness. `sshd` reads everything
+following a `Match` line as part of that block until the next `Match` or the end
+of the file, so a keyword appended after one would silently stop applying to the
+server and start applying to whoever the block selects. The renderer regenerates
+the whole file in the one order that means what it says, and the same
+`sshd -t -f` gate, diff and two commands apply.
+
+```
+PermitRootLogin no
+PasswordAuthentication no
+
+Match User ana
+    PasswordAuthentication yes
+```
+
 ### Changing the port
 
 Moving `Port` or `ListenAddress` is the one change that can lock you out of a
@@ -306,6 +331,45 @@ key or an RSA key under 2048 bits is a finding.
 directory rather than deleted, so a regeneration done by mistake is reversible
 with a `mv` you can read, and the dialog says in as many words what it does to
 every client that has ever connected.
+
+## Who has a key
+
+`6` is the accounts somebody could log into — `root`, and the ordinary accounts
+with a real shell — each row a public key from that account's
+`~/.ssh/authorized_keys`, with its type, its SHA256 fingerprint and its comment.
+An account with no key is a row too, saying so: "nobody logs into `backup` with
+a key" is as much of an answer as a fingerprint is, and an account missing from
+the screen would read as an account missing from the machine.
+
+`PubkeyAuthentication yes` on the config screen says the server accepts keys.
+This screen is who has one.
+
+`A` adds a key: pick the account, paste the `.pub` line. Before anything is
+staged the paste is checked — one line, not a private key, no per-key options
+smuggled in front of it — and then the staged file is handed to `ssh-keygen -lf`
+and the dialog reports the fingerprint **ssh-keygen** gave back, not one this
+tool worked out for itself. Two commands follow, both previewed:
+
+```sh
+install -d -m 700 -o ana -g ana /home/ana/.ssh
+install -m 600 -o ana -g ana <staged file> /home/ana/.ssh/authorized_keys
+```
+
+The modes are part of the plan rather than left to the umask, because with
+`StrictModes` on — the default — sshd ignores a group-writable `~/.ssh` or
+`authorized_keys` and leaves you staring at a key that is plainly there and
+plainly not working.
+
+`R` on this screen removes the selected key, identified by its **fingerprint**
+rather than by its position: the file is re-read, rewritten without that one
+line, and installed the same way. Everything else in it — the comments, the
+`from=` restrictions, the other keys, the order — is copied through byte for
+byte, because unlike the drop-in this is not a file `tui-ssh` owns. Removing the
+last key leaves the file empty rather than deleting it, and the dialog says
+whose access ends and whether a password would still get in.
+
+`R` means re-read the server on every other screen, as it always has; `ctrl+r`
+does that from here too.
 
 ## Usage
 
@@ -398,6 +462,9 @@ Every one of these is previewed and confirmed first.
 | Key | What runs |
 | --- | --- |
 | `e` | `sshd -t -f <staged file>` (a read, before the question), then `install -m 600 <staged file> /etc/ssh/sshd_config.d/90-tui-ssh.conf` and `systemctl reload <unit>` |
+| `m` | the same three, with the keyword written inside a `Match` block |
+| `A` | `ssh-keygen -l -f <staged file>` (a read, before the question), then `install -d -m 700 -o <user> -g <group> <home>/.ssh` and `install -m 600 -o <user> -g <group> <staged file> <home>/.ssh/authorized_keys` |
+| `R` | on the users screen: `install -m 600 -o <user> -g <group> <staged file> <home>/.ssh/authorized_keys`, with the selected key rewritten out |
 | `t` | `loginctl terminate-session <id>` |
 | `b` | `ufw deny from <address>`, and only when ufw is the active firewall |
 | `K` | `install -d -m 700 /etc/ssh/tui-ssh-hostkeys-<stamp>`, `mv -- <the key files> <that directory>/`, `ssh-keygen -A`, `systemctl reload <unit>` |
@@ -405,7 +472,11 @@ Every one of these is previewed and confirmed first.
 
 Nothing else. There is no code path that writes to `/etc` other than that one
 `install`, its destination is a constant rather than a parameter, and the only
-`mv` refuses any path that is not `/etc/ssh/ssh_host_*_key`.
+`mv` refuses any path that is not `/etc/ssh/ssh_host_*_key`. The two `install`s
+that write under a home directory take their account name, group and path from
+`/etc/passwd` — and check all three against the shape a local account has before
+building a command, because a file this tool *reads* is not a source it trusts
+with an argv that runs as root.
 
 The unit is `sshd` on Fedora, Arch and openSUSE and `ssh` on Debian and Ubuntu.
 It is read from systemd, not assumed.
@@ -414,7 +485,7 @@ It is read from systemd, not assumed.
 
 | Key | Action |
 | --- | --- |
-| `tab` / `1`–`5` | Move between config, sessions, auth log, host keys and service |
+| `tab` / `1`–`6` | Move between config, sessions, auth log, host keys, service and users |
 | `↑`/`k`, `↓`/`j` | Move the selection, or scroll the detail screen |
 | `g` / `G` | First / last row |
 | `pgup` / `pgdn` | Scroll a page |
@@ -422,18 +493,22 @@ It is read from systemd, not assumed.
 | `esc` | Leave the detail screen |
 | `/` | Filter this screen (`esc` clears) |
 | `e` | Change a setting, written to the drop-in with a diff to confirm |
+| `m` | Change a setting inside a `Match` block, for some connections only |
+| `A` | Add a public key to an account's `authorized_keys` |
+| `R` | On the users screen, remove the selected key; elsewhere, re-read the server |
 | `t` | End the selected session |
 | `b` | Block the selected address at the firewall |
 | `w` | Switch the log window between 24 hours and 7 days |
 | `K` | Regenerate the host keys, old ones moved aside |
 | `r` | Reload the SSH service |
-| `R` | Re-read the server |
+| `ctrl+r` | Re-read the server, from any screen |
 | `?` | Help |
 | `q` | Quit |
 
-In the **setting editor**: `tab` moves between the two fields, `←`/`→` cycles a
+In the **setting editor**: `tab` moves between the fields, `←`/`→` cycles a
 value, `space` opens the list, `enter` builds the change and shows it, `esc`
-cancels.
+cancels. `m` opens the same editor with two more fields at the top, for the
+block's criteria.
 
 ![The setting editor](docs/screenshots/tui-ssh-edit.png)
 
@@ -456,6 +531,12 @@ cancels.
   `/etc/ssh/sshd_config.d/90-tui-ssh.conf`, checked by `sshd -t -f` before you
   are asked, reviewed as a unified diff, installed with `install -m 600` and
   applied with `systemctl reload`.
+- Set that same keyword inside a `Match User`, `Match Group` or `Match Address`
+  block instead, with the criteria validated and every block kept below
+  everything at file scope, which is the only order sshd reads as written.
+- List the local accounts and the public keys on them, with fingerprints and
+  comments; add a key, checked with `ssh-keygen -lf` before you are asked; and
+  remove one by fingerprint, with the rest of the file copied through unchanged.
 - List the live logins with the address, terminal and session behind each, and
   end one.
 - Summarise the authentication log over a day or a week, with the busiest
@@ -471,9 +552,14 @@ cancels.
 - **It does not edit `sshd_config`.** One drop-in, one keyword at a time, from a
   closed set. Everything else is a job for `$EDITOR` — and the file view tells
   you which file and which line to open.
-- **No `Match` block editing.** Blocks are parsed and shown, and a keyword set
-  only inside one is labelled as such, but the form writes at file scope.
-- **No authorized_keys.** Whose key is on which account is
+- **`Match` blocks, but only the three criteria it can check.** `User`, `Group`
+  and `Address`. `LocalPort`, `RDomain` and the rest are parsed and shown when
+  another file carries them, and a keyword set only inside one is labelled as
+  such, but the form writes the three it can validate.
+- **authorized_keys, but only the default one.** `~/.ssh/authorized_keys` for a
+  local account. An account whose `AuthorizedKeysFile` points somewhere else, an
+  `AuthorizedKeysCommand`, a key with per-key options, and anything about a
+  certificate authority are all left alone. Creating the accounts themselves is
   [tui-users](https://github.com/tui-tools/tui-users)' question, not this one's.
 - **No `ssh_config`**: this is the server, not the client.
 - **No fail2ban or sshguard rules.** Their presence is reported, read-only;
@@ -543,9 +629,11 @@ talks to `internal/ssh.Backend`, which returns a server-neutral model:
 
 ```
 Model{Effective, EffectiveReason, Settings, Files, Service, Sessions, Auth,
-      HostKeys, Firewall}
+      HostKeys, Users, Firewall}
 Setting{Key, Value, Effective, Security, Verdict, Note, Sources, Default}
 Source{File, Line, Text, Match}
+User{Name, Group, Home, KeysPath, Keys, Unreadable}
+AuthorizedKey{Line, Options, Type, Bits, Fingerprint, Comment, Raw}
 ```
 
 `internal/openssh` is the only package that starts a process. It drives eight
@@ -607,11 +695,18 @@ widgets, the config loader and the command runner shared by the whole family.
 - Ending a session kills everything running in it. Replacing the host keys makes
   every client that has connected before refuse to connect until its
   `known_hosts` entry is removed. Both say so before you agree.
+- **Adding a key grants access; removing one ends it.** The dialog names the
+  fingerprint either way, and says when the key being removed is the last one
+  that account has — and, if `PasswordAuthentication` is `no` as well, that
+  there is then no way into it over SSH at all.
 - Two reads escalate, unprompted, through `sudo -n`: `sshd -T`, and `cat` for a
-  configuration file the plain read cannot open. Fedora and Arch ship
-  `/etc/ssh/sshd_config` mode 0600, so without the second one those machines
-  would show every setting as coming from nowhere. Both fall back rather than
-  demanding a password, and the screen says which answer you are looking at.
+  file the plain read cannot open. Fedora and Arch ship `/etc/ssh/sshd_config`
+  mode 0600, so without the second one those machines would show every setting
+  as coming from nowhere; the same fallback is what reads another account's
+  `~/.ssh/authorized_keys`, which is mode 700 all the way down. Both fall back
+  rather than demanding a password, and the screen says which answer you are
+  looking at — an account whose keys could not be read says so on its row,
+  rather than showing an empty list that would read as "nobody has a key here".
 - `tui-ssh` re-reads the server after every change, so what you see is what the
   system reports, not what the tool assumed.
 

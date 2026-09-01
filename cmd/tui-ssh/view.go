@@ -35,7 +35,7 @@ func (a *app) View() string {
 	switch a.mode {
 	case modeConfirm:
 		return a.confirm.View(a.theme, a.width, a.height)
-	case modeFilter:
+	case modeFilter, modePrompt:
 		return a.input.View(a.theme, a.width, a.height)
 	case modePicker:
 		return a.picker.View(a.theme, a.width, a.height)
@@ -97,6 +97,8 @@ func (a *app) emptyMessage() string {
 		return "no host key was found in /etc/ssh"
 	case screenService:
 		return "the SSH service could not be read"
+	case screenUsers:
+		return "no local account could be read from /etc/passwd"
 	default:
 		return a.noSettingsMessage()
 	}
@@ -205,6 +207,8 @@ func (a *app) defaultStatus() string {
 		return count + " host keys" + suffix
 	case screenService:
 		return a.model.Service.Unit + suffix
+	case screenUsers:
+		return count + " rows  ·  A adds a key, R removes one" + suffix
 	default:
 		return count + " settings  ·  e changes one" + suffix
 	}
@@ -236,9 +240,64 @@ func (a *app) tableData() ([]ui.Column, [][]string, []*lipgloss.Style) {
 		return a.hostKeysTable()
 	case screenService:
 		return a.serviceTable()
+	case screenUsers:
+		return a.usersTable()
 	default:
 		return a.configTable()
 	}
+}
+
+// usersTable is the accounts and the public keys that can log into them.
+func (a *app) usersTable() ([]ui.Column, [][]string, []*lipgloss.Style) {
+	columns := []ui.Column{
+		{Title: "USER", Width: 12, Flex: true},
+		{Title: "TYPE", Width: 9},
+		{Title: "FINGERPRINT", Width: 26, Flex: true},
+	}
+	showComment := a.width >= 80
+	if showComment {
+		columns = append(columns, ui.Column{Title: "COMMENT", Width: 20, Flex: true})
+	}
+
+	rows := make([][]string, 0, len(a.userRows))
+	styles := make([]*lipgloss.Style, 0, len(a.userRows))
+	for _, row := range a.userRows {
+		cells := []string{row.user.Name, orNone(row.key.Type),
+			orNone(row.key.Fingerprint)}
+		if !row.hasKey {
+			cells[2] = noKeysCell(row.user)
+		}
+		if showComment {
+			cells = append(cells, orNone(row.key.Comment))
+		}
+		rows = append(rows, cells)
+		styles = append(styles, a.userRowStyle(row))
+	}
+	return columns, rows, styles
+}
+
+// noKeysCell says why an account has no key listed, which is not always the
+// same answer.
+func noKeysCell(user ssh.User) string {
+	if user.Unreadable != "" {
+		return "(could not read " + user.KeysPath + ")"
+	}
+	return "(no authorized key)"
+}
+
+// userRowStyle greys out the rows that are not a key, so a screen of accounts
+// reads as the list of keys it mostly is.
+func (a *app) userRowStyle(row userRow) *lipgloss.Style {
+	var style lipgloss.Style
+	switch {
+	case row.hasKey:
+		style = a.theme.Row
+	case row.user.Unreadable != "":
+		style = a.theme.Row.Foreground(a.theme.Warn.GetForeground())
+	default:
+		style = a.theme.Row.Foreground(a.theme.Muted.GetForeground())
+	}
+	return &style
 }
 
 // configTable is the settings list: the keyword, the value in force, the
@@ -511,9 +570,61 @@ func (a *app) detailLines() []string {
 		return a.hostKeyDetail()
 	case screenService:
 		return a.serviceDetail()
+	case screenUsers:
+		return a.userDetail()
 	default:
 		return a.settingDetail()
 	}
+}
+
+// userDetail shows one account and the key selected on it: where the file is,
+// what the key is, and what the two keys on this screen do.
+func (a *app) userDetail() []string {
+	row, ok := a.selectedUserRow()
+	if !ok {
+		return []string{"(nothing selected)"}
+	}
+	lines := []string{
+		"Account: " + row.user.Name,
+		"",
+		"  home           " + orNone(row.user.Home),
+		"  group          " + orNone(row.user.Group),
+		"  keys file      " + orNone(row.user.KeysPath),
+		"  keys           " + strconv.Itoa(len(row.user.Keys)),
+	}
+	if row.user.Unreadable != "" {
+		lines = append(lines, "",
+			"  "+row.user.KeysPath+" could not be read:",
+			"  "+row.user.Unreadable,
+			"",
+			"  Re-run with sudo, or as root, to see whose keys are on this account.")
+		return lines
+	}
+
+	if row.hasKey {
+		lines = append(lines, "", "Selected key",
+			"  line           "+strconv.Itoa(row.key.Line),
+			"  type           "+orNone(row.key.Type),
+			"  bits           "+orZero(row.key.Bits),
+			"  fingerprint    "+orNone(row.key.Fingerprint),
+			"  comment        "+orNone(row.key.Comment))
+		if row.key.Options != "" {
+			lines = append(lines, "  options        "+row.key.Options)
+		}
+		lines = append(lines, "",
+			"Whoever holds the private half of this key can log in as "+
+				row.user.Name+".",
+			"",
+			"  press R to remove this key, A to add another")
+		return lines
+	}
+	lines = append(lines, "",
+		"Nobody has a public key on this account, so nobody logs into it with",
+		"one. Whether a password would work is the config screen's question:",
+		"PasswordAuthentication, and PermitRootLogin for root.",
+		"",
+		"  press A to add a key")
+	return lines
 }
 
 // settingDetail shows one keyword: what it is, what tui-ssh thinks of it, and
@@ -737,8 +848,13 @@ func (a *app) shortHelpKeys() []ui.KeyHint {
 		hints = append(hints, ui.KeyHint{Key: "K", Desc: "regenerate"})
 	case screenService:
 		hints = append(hints, ui.KeyHint{Key: "r", Desc: "reload"})
+	case screenUsers:
+		hints = append(hints,
+			ui.KeyHint{Key: "A", Desc: "add key"},
+			ui.KeyHint{Key: "R", Desc: "remove key"})
 	default:
 		hints = append(hints, ui.KeyHint{Key: "e", Desc: "change"},
+			ui.KeyHint{Key: "m", Desc: "match"},
 			ui.KeyHint{Key: "r", Desc: "reload"})
 	}
 	return append(hints,
@@ -750,7 +866,7 @@ func (a *app) shortHelpKeys() []ui.KeyHint {
 // helpKeys is the full key list shown on the help screen.
 func helpKeys() []ui.KeyHint {
 	return []ui.KeyHint{
-		{Key: "tab / 1-5", Desc: "config, sessions, auth log, host keys, service"},
+		{Key: "tab / 1-6", Desc: "config, sessions, auth log, host keys, service, users"},
 		{Key: "↑/k, ↓/j", Desc: "move the selection, or scroll the detail screen"},
 		{Key: "g / G", Desc: "first / last row"},
 		{Key: "pgup/pgdn", Desc: "scroll a page"},
@@ -758,12 +874,15 @@ func helpKeys() []ui.KeyHint {
 		{Key: "esc", Desc: "leave the detail screen"},
 		{Key: "/", Desc: "filter this screen (esc clears)"},
 		{Key: "e", Desc: "change a setting, written to a drop-in with a diff"},
+		{Key: "m", Desc: "change a setting inside a Match block"},
+		{Key: "A", Desc: "add a public key to an account (users screen)"},
+		{Key: "R", Desc: "on users, remove the selected key; elsewhere, re-read"},
 		{Key: "t", Desc: "end the selected session"},
 		{Key: "b", Desc: "block the selected address at the firewall"},
 		{Key: "w", Desc: "switch the log window between 24h and 7d"},
 		{Key: "K", Desc: "regenerate the host keys, old ones moved aside"},
 		{Key: "r", Desc: "reload the SSH service"},
-		{Key: "R", Desc: "re-read the server"},
+		{Key: "ctrl+r", Desc: "re-read the server, from any screen"},
 		{Key: "?", Desc: "this help"},
 		{Key: "q", Desc: "quit"},
 		{Key: "", Desc: ""},
