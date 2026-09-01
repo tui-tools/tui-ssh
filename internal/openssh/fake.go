@@ -78,6 +78,40 @@ subsystem sftp /usr/libexec/openssh/sftp-server
 // preview a reader sees in the README is the preview the tool produces.
 const demoStamp = "20260829-114500"
 
+// The sample machine's accounts, as /etc/passwd and /etc/group carry them. They
+// are parsed rather than written as structs, so --demo exercises the account
+// reader the same way it exercises the configuration parser.
+const (
+	//nolint:gosec // G101: /etc/passwd carries an `x` where the password used to be; there is no credential in this fixture
+	demoPasswd = `root:x:0:0:root:/root:/bin/bash
+bin:x:1:1:bin:/bin:/usr/sbin/nologin
+sshd:x:74:74:Privilege-separated SSH:/usr/share/empty.sshd:/usr/sbin/nologin
+deploy:x:1000:1000:Deploy:/home/deploy:/bin/bash
+ana:x:1001:1001:Ana:/home/ana:/bin/bash
+backup:x:1002:1002:Backup:/home/backup:/bin/bash
+`
+
+	demoGroup = `root:x:0:
+bin:x:1:
+deploy:x:1000:
+ana:x:1001:
+backup:x:1002:
+`
+)
+
+// The sample machine's authorized_keys files. The keys are real ed25519, RSA
+// and ECDSA public keys generated for this fixture, so the fingerprints on
+// screen are fingerprints ssh-keygen would print for them — and the private
+// halves were thrown away, because a demo does not need them and a repository
+// must never carry one.
+var demoAuthorizedKeys = map[string]string{
+	"/home/deploy/.ssh/" + AuthorizedKeysName: "# The keys deploy uses from two machines.\n" +
+		"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHVu7l48AcDeT36Odle6Mnflh5BsVHir2huMQEf+qt4Z deploy@laptop\n" +
+		"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEmHjZCBLAiW1n7NUZM9Q76nQkOi/zMPEZEdREVJ8NR0 deploy@phone\n",
+	"/home/ana/.ssh/" + AuthorizedKeysName: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC70Q+c5ix9Nvo9wgzlCVc9Xxvth4LhYz/ZDelU8UFfXMWvcZvF+EXYoaJ74qvngnMbny7j2irScSeCj3nxF2aJ5YdO1J2feEXf+46CJK9Yy4vIvuoAE7uALqlN0LIrbQn6EMCMwk5vssPib2aRMgvr4WIAvtJPVzKt1LnrmAGfWHU8q/1Wj8e98bnuwSez5b4+p+xx9eSP1GnsSkoJuP/kN2BuNGKRVVV/tjg9N49uQ2w6RVW1cyqTcMYwa0WyfrmowWBxy5fqmJHYSYmytjvjDncuNvDTZYOPjqqQrws/YEMVUnhQ2ifIaOL5Dlgec0yvaCO4HmAXxm2sgq0Cs5sgTdnqn4tRE120JtXcclnfZse+ANjjQ/swX8AsZyp/yEvahGQKqpPCeW2O2+ZfEtJIswCNtHYgAw4IOR0sNVh/OxX1TGwUp9ng9UgucUB/SxAZN6vQtRwklPJe395rWyI7gDVqwRsmOgrIbHsOeBFZPkFKGB8b3rmQ5NYl9MYOdAc= ana@workstation\n",
+	"/root/.ssh/" + AuthorizedKeysName:     "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBKv9x7BOXVECTBDT4+5PkTyBqQFxEBU+TCa8iA3Cc/9Qx5JPcdR7D6zuYuoKKzujJevksu1GAVBMTrwXGIgL2+c= ci@runner\n",
+}
+
 // Fake is an in-memory OpenSSH server. It backs --demo and the tests: every key
 // works, every command is built and previewed exactly as the real backend
 // builds it, and nothing reaches the system.
@@ -92,6 +126,10 @@ type Fake struct {
 	// staged is the pending file content, keyed by destination path. --demo
 	// writes no file at all, so the "staging directory" is this map.
 	staged map[string]string
+	// keys is the sample machine's authorized_keys files, keyed by path. It is
+	// the only piece of demo state a command rewrites wholesale, which is what
+	// makes adding and removing a key in --demo show up on the users screen.
+	keys map[string]string
 }
 
 // NewFake builds the sample machine: a stock server that still takes passwords
@@ -107,6 +145,10 @@ func NewFake() *Fake {
 // reset builds the sample state. It is a function rather than a literal so
 // --demo starts from the same machine every time, however it was left.
 func (f *Fake) reset() {
+	f.keys = map[string]string{}
+	for path, content := range demoAuthorizedKeys {
+		f.keys[path] = content
+	}
 	files := map[string]string{
 		ConfigPath:           demoConfig,
 		demoDistroDropInPath: demoDistroDropIn,
@@ -155,6 +197,23 @@ func (f *Fake) reset() {
 	f.model.Settings = f.settings(demoEffective)
 	f.model.Auth = ParseAuthLog(demoAuthLog(), ssh.Window24h,
 		"journalctl -u sshd -u ssh --since -24h")
+	f.model.Users = f.users()
+}
+
+// users reads the sample machine's accounts through the same two parsers the
+// real backend uses on /etc/passwd and /etc/group, and their keys through the
+// same reader — so a key added in --demo is parsed back the way a key added on
+// a real machine would be.
+func (f *Fake) users() []ssh.User {
+	read := func(path string) (string, error) {
+		raw, ok := f.keys[path]
+		if !ok {
+			return "", fmt.Errorf("open %s: no such file or directory", path)
+		}
+		return raw, nil
+	}
+	return LoadAuthorizedKeys(
+		ParsePasswd(demoPasswd, ParseGroups(demoGroup)), read)
 }
 
 // demoFiles parses the sample machine's configuration the way the real backend
@@ -305,8 +364,15 @@ func (f *Fake) apply(cmd ssh.Command) (string, error) {
 		return "", nil
 	}
 	switch {
-	case argv[0] == "install" && argv[1] == "-m":
+	case argv[0] == "install" && argv[1] == "-d":
+		// Creating ~/.ssh changes nothing a screen shows: the sample machine's
+		// directories are implied by the key files themselves.
+		return "", nil
+	case argv[0] == "install" && argv[1] == "-m" &&
+		argv[len(argv)-1] == DropInPath:
 		return f.installDropIn(argv)
+	case argv[0] == "install" && argv[1] == "-m":
+		return f.installAuthorizedKeys(argv)
 	case argv[0] == "loginctl" && argv[1] == "terminate-session":
 		return f.terminate(argv[2])
 	case argv[0] == "ssh-keygen" && argv[1] == "-A":
@@ -376,6 +442,25 @@ func applyDropIn(effective, dropIn string) string {
 	return b.String()
 }
 
+// installAuthorizedKeys applies a staged key file to the sample machine and
+// re-reads the accounts from it.
+func (f *Fake) installAuthorizedKeys(argv []string) (string, error) {
+	destination := argv[len(argv)-1]
+	content, ok := f.staged[destination]
+	if !ok {
+		return "", fmt.Errorf("install: nothing staged for %s", destination)
+	}
+	if content == "" {
+		// The last key was removed. The file stays, empty, exactly as the real
+		// install would leave it.
+		f.keys[destination] = ""
+	} else {
+		f.keys[destination] = content
+	}
+	f.model.Users = f.users()
+	return "", nil
+}
+
 // terminate removes a session from the sample machine.
 func (f *Fake) terminate(id string) (string, error) {
 	for i, session := range f.model.Sessions {
@@ -410,14 +495,36 @@ func (f *Fake) regenerateHostKeys() (string, error) {
 // writes nothing at all, so the staging path is a name rather than a file.
 func (f *Fake) BuildSetOption(model ssh.Model, key, value string) (ssh.WritePlan, error) {
 	key = WriteKeyFor(key, true)
-	before := ""
-	if file, ok := model.File(DropInPath); ok {
-		before = file.Raw
-	}
+	before := currentDropIn(model)
 	content, err := RenderDropIn(before, key, value)
 	if err != nil {
 		return ssh.WritePlan{}, err
 	}
+	return f.dropInPlan(model, before, content, warningFor(model, key, value))
+}
+
+// BuildSetMatchOption stages the same drop-in with the keyword inside a Match
+// block.
+func (f *Fake) BuildSetMatchOption(model ssh.Model, matchType, matchValue,
+	key, value string) (ssh.WritePlan, error) {
+	key = WriteKeyFor(key, true)
+	before := currentDropIn(model)
+	content, err := RenderMatchDropIn(before, matchType, matchValue, key, value)
+	if err != nil {
+		return ssh.WritePlan{}, err
+	}
+	criteria, err := MatchCriteria(matchType, matchValue)
+	if err != nil {
+		return ssh.WritePlan{}, err
+	}
+	return f.dropInPlan(model, before, content,
+		matchWarningFor(model, criteria, key, value))
+}
+
+// dropInPlan is the plan both drop-in editors return, with the staging done in
+// memory.
+func (f *Fake) dropInPlan(model ssh.Model, before, content,
+	warning string) (ssh.WritePlan, error) {
 	if before == content {
 		return ssh.WritePlan{}, fmt.Errorf("%s already says exactly this", DropInPath)
 	}
@@ -441,7 +548,7 @@ func (f *Fake) BuildSetOption(model ssh.Model, key, value string) (ssh.WritePlan
 		Content:  content,
 		Diff:     Diff(DropInPath, before, content),
 		TempPath: temp,
-		Warning:  warningFor(model, key, value),
+		Warning:  warning,
 		// The sample machine has no sshd to ask, so the check is reported as
 		// the real one reports a pass — the command line is the one the real
 		// backend would run, and the value it approved is one RenderDropIn
@@ -451,6 +558,113 @@ func (f *Fake) BuildSetOption(model ssh.Model, key, value string) (ssh.WritePlan
 		ValidationCommand: f.Preview(validate),
 		Commands:          []ssh.Command{installCmd, reloadCmd},
 	}, nil
+}
+
+// BuildAddAuthorizedKey stages the account's new key file in memory and returns
+// the same two commands the real backend returns.
+func (f *Fake) BuildAddAuthorizedKey(model ssh.Model, name,
+	pasted string) (ssh.WritePlan, error) {
+	user, before, err := f.prepareKeyChange(model, name)
+	if err != nil {
+		return ssh.WritePlan{}, err
+	}
+	key, err := CheckPublicKey(pasted)
+	if err != nil {
+		return ssh.WritePlan{}, err
+	}
+	content, err := RenderAuthorizedKeysWith(before, key)
+	if err != nil {
+		return ssh.WritePlan{}, err
+	}
+
+	plan, temp, err := f.stageKeyFile(user, before, content)
+	if err != nil {
+		return ssh.WritePlan{}, err
+	}
+	plan.Warning = addKeyWarning(model, user, key)
+
+	// The sample machine has no ssh-keygen to ask. The command line is the one
+	// the real backend would run, and the fingerprint reported is the one this
+	// package computed from the key that was pasted — which is the same value
+	// ssh-keygen prints for it.
+	fingerprint, err := BuildFingerprintKey(temp)
+	if err != nil {
+		return ssh.WritePlan{}, err
+	}
+	plan.Validated = true
+	plan.ValidationCommand = f.Preview(fingerprint)
+	plan.Validation = "ssh-keygen reads the new key as " + key.Label()
+
+	createDir, err := BuildCreateSSHDir(user)
+	if err != nil {
+		return ssh.WritePlan{}, err
+	}
+	install, err := BuildInstallAuthorizedKeys(temp, user)
+	if err != nil {
+		return ssh.WritePlan{}, err
+	}
+	plan.Commands = []ssh.Command{createDir, install}
+	return plan, nil
+}
+
+// BuildRemoveAuthorizedKey stages the account's key file without one key.
+func (f *Fake) BuildRemoveAuthorizedKey(model ssh.Model, name,
+	fingerprint string) (ssh.WritePlan, error) {
+	user, before, err := f.prepareKeyChange(model, name)
+	if err != nil {
+		return ssh.WritePlan{}, err
+	}
+	content, err := RenderAuthorizedKeysWithout(before, fingerprint)
+	if err != nil {
+		return ssh.WritePlan{}, err
+	}
+
+	plan, temp, err := f.stageKeyFile(user, before, content)
+	if err != nil {
+		return ssh.WritePlan{}, err
+	}
+	plan.Warning = removeKeyWarning(model, user, fingerprint)
+	plan.Validated, plan.Validation = true,
+		"the remaining keys are copied through unchanged"
+
+	install, err := BuildInstallAuthorizedKeys(temp, user)
+	if err != nil {
+		return ssh.WritePlan{}, err
+	}
+	plan.Commands = []ssh.Command{install}
+	return plan, nil
+}
+
+// prepareKeyChange resolves the sample account and reads its key file.
+func (f *Fake) prepareKeyChange(model ssh.Model,
+	name string) (ssh.User, string, error) {
+	user, ok := model.User(name)
+	if !ok {
+		return ssh.User{}, "",
+			fmt.Errorf("openssh: %q is not an account on this machine", name)
+	}
+	if err := CheckUser(user); err != nil {
+		return ssh.User{}, "", err
+	}
+	return user, f.keys[user.KeysPath], nil
+}
+
+// stageKeyFile records the pending key file against its destination, which is
+// what the install hook reads back.
+func (f *Fake) stageKeyFile(user ssh.User, before,
+	content string) (ssh.WritePlan, string, error) {
+	if before == content {
+		return ssh.WritePlan{}, "", fmt.Errorf("%s already says exactly this",
+			user.KeysPath)
+	}
+	temp := "/tmp/tui-ssh/" + AuthorizedKeysName
+	f.staged[user.KeysPath] = content
+	return ssh.WritePlan{
+		Path:     user.KeysPath,
+		Content:  content,
+		Diff:     Diff(user.KeysPath, before, content),
+		TempPath: temp,
+	}, temp, nil
 }
 
 // BuildReload asks the service to re-read its configuration.

@@ -159,6 +159,326 @@ func TestActionsPreviewExactlyWhatTheyRun(t *testing.T) {
 	}
 }
 
+// demoKey is a public key that is not on the sample machine yet. It is a real
+// ed25519 key whose private half was thrown away.
+const demoKey = "ssh-ed25519 " +
+	"AAAAC3NzaC1lZDI1NTE5AAAAIEmHjZCBLAiW1n7NUZM9Q76nQkOi/zMPEZEdREVJ8NR0 " +
+	"deploy@phone"
+
+// selectUserRow moves the cursor to the users screen row of an account, and,
+// when a fingerprint is given, to that account's key.
+func selectUserRow(t *testing.T, a *app, user, fingerprint string) {
+	t.Helper()
+	gotoScreen(t, a, screenUsers)
+	for i, row := range a.userRows {
+		if row.user.Name != user {
+			continue
+		}
+		if fingerprint != "" && row.key.Fingerprint != fingerprint {
+			continue
+		}
+		a.cursor[screenUsers] = i
+		return
+	}
+	t.Fatalf("no users row for %q %q on the sample server", user, fingerprint)
+}
+
+// pickOption moves an open picker onto one of its options and accepts it.
+func pickOption(t *testing.T, a *app, option string) {
+	t.Helper()
+	if a.mode != modePicker {
+		t.Fatalf("no picker is open (status: %s)", a.status)
+	}
+	for i, candidate := range a.picker.Options {
+		if candidate == option {
+			a.picker.Cursor = i
+			drain(t, a, press(a, "enter"))
+			return
+		}
+	}
+	t.Fatalf("the picker does not offer %q: %v", option, a.picker.Options)
+}
+
+// TestTheUsersScreenListsEveryKeyWithItsFingerprint: the screen `R` acts on has
+// to name what it would remove, or removing by fingerprint is a guess.
+func TestTheUsersScreenListsEveryKeyWithItsFingerprint(t *testing.T) {
+	a, _ := newTestApp(t)
+	gotoScreen(t, a, screenUsers)
+
+	keys, accounts := 0, map[string]bool{}
+	for _, row := range a.userRows {
+		accounts[row.user.Name] = true
+		if !row.hasKey {
+			continue
+		}
+		keys++
+		if !strings.HasPrefix(row.key.Fingerprint, "SHA256:") {
+			t.Errorf("%s has a key with no fingerprint: %+v", row.user.Name, row.key)
+		}
+	}
+	if keys != 4 {
+		t.Errorf("the sample machine shows %d keys, want 4", keys)
+	}
+	// An account with no key is a row, not an omission: "nobody can log into
+	// backup with a key" is as much of an answer as a fingerprint is.
+	if !accounts["backup"] {
+		t.Errorf("an account with no key was dropped from the screen")
+	}
+	view := a.View()
+	if !strings.Contains(view, "deploy@laptop") {
+		t.Errorf("the users table does not show the key comments:\n%s", view)
+	}
+}
+
+// TestAddingAnAuthorizedKeyPreviewsBothCommands walks the whole flow: pick the
+// account, paste the key, and see the directory and the install before either
+// runs.
+func TestAddingAnAuthorizedKeyPreviewsBothCommands(t *testing.T) {
+	a, backend := newTestApp(t)
+	selectUserRow(t, a, "ana", "")
+
+	drain(t, a, press(a, "A"))
+	pickOption(t, a, "ana")
+	if a.mode != modePrompt {
+		t.Fatalf("choosing an account did not ask for the key (status: %s)", a.status)
+	}
+
+	a.input.Model.SetValue(demoKey)
+	drain(t, a, press(a, "enter"))
+	if a.mode != modeConfirm {
+		t.Fatalf("the key was not accepted (status: %s)", a.status)
+	}
+
+	// ssh-keygen was asked what it makes of the staged file before the question
+	// was put, and the dialog reports the fingerprint it gave back.
+	if !strings.Contains(a.confirm.Body, "ssh-keygen") ||
+		!strings.Contains(a.confirm.Body, "SHA256:") {
+		t.Errorf("the dialog does not report the key check:\n%s", a.confirm.Body)
+	}
+	if !strings.Contains(a.confirm.Body, "+"+demoKey) {
+		t.Errorf("the dialog does not show the line being added:\n%s", a.confirm.Body)
+	}
+
+	previews := strings.Split(a.confirm.Command, "\n")
+	if len(previews) != 2 {
+		t.Fatalf("previewed %d commands, want the mkdir and the install:\n%s",
+			len(previews), a.confirm.Command)
+	}
+	want := []string{
+		"sudo -n install -d -m 700 -o ana -g ana /home/ana/.ssh",
+		"sudo -n install -m 600 -o ana -g ana /tmp/tui-ssh/authorized_keys " +
+			"/home/ana/.ssh/authorized_keys",
+	}
+	for i, preview := range previews {
+		if strings.TrimPrefix(preview, "$ ") != want[i] {
+			t.Errorf("preview %d = %q, want %q", i, preview, want[i])
+		}
+	}
+
+	drain(t, a, press(a, "y"))
+	ran := backend.Ran()
+	if len(ran) != 2 {
+		t.Fatalf("ran %d commands, want 2", len(ran))
+	}
+	for i, cmd := range ran {
+		if got := backend.Preview(cmd); got != want[i] {
+			t.Errorf("ran %q, want the previewed %q", got, want[i])
+		}
+	}
+
+	// And the sample machine now shows the key, the way a real one would.
+	user, ok := a.model.User("ana")
+	if !ok || len(user.Keys) != 2 {
+		t.Fatalf("ana has %d keys after the write", len(user.Keys))
+	}
+	if user.Keys[1].Comment != "deploy@phone" {
+		t.Errorf("the new key is not there: %+v", user.Keys)
+	}
+}
+
+// TestAddingAKeyRefusesWhatSshKeygenWould: the paste is checked before anything
+// is staged, and a private key pasted by mistake is the one wrong paste worth
+// naming.
+func TestAddingAKeyRefusesWhatSshKeygenWould(t *testing.T) {
+	for name, pasted := range map[string]string{
+		"nonsense":         "hello",
+		"a private key":    "-----BEGIN OPENSSH PRIVATE KEY-----",
+		"a forced command": `command="/bin/sh" ` + demoKey,
+	} {
+		a, backend := newTestApp(t)
+		selectUserRow(t, a, "ana", "")
+		drain(t, a, press(a, "A"))
+		pickOption(t, a, "ana")
+		a.input.Model.SetValue(pasted)
+		drain(t, a, press(a, "enter"))
+
+		if a.mode == modeConfirm {
+			t.Errorf("%s reached a confirm dialog", name)
+		}
+		if a.status == "" {
+			t.Errorf("%s was refused silently", name)
+		}
+		if len(backend.Ran()) != 0 {
+			t.Errorf("%s ran a command anyway", name)
+		}
+	}
+}
+
+// TestRemovingAnAuthorizedKeyRewritesTheFile: the key is identified by its
+// fingerprint, the rest of the file is copied through, and one install applies
+// it.
+func TestRemovingAnAuthorizedKeyRewritesTheFile(t *testing.T) {
+	a, backend := newTestApp(t)
+	user, ok := a.model.User("deploy")
+	if !ok || len(user.Keys) != 2 {
+		t.Fatalf("the sample deploy account has %d keys", len(user.Keys))
+	}
+	gone, kept := user.Keys[0], user.Keys[1]
+
+	selectUserRow(t, a, "deploy", gone.Fingerprint)
+	drain(t, a, press(a, "R"))
+	if a.mode != modeConfirm {
+		t.Fatalf("R did not open a confirm dialog (status: %s)", a.status)
+	}
+	if !strings.Contains(a.confirm.Title, gone.Fingerprint) {
+		t.Errorf("the dialog does not name the key being removed: %q", a.confirm.Title)
+	}
+	if !strings.Contains(a.confirm.Body, "loses access") {
+		t.Errorf("the dialog does not say what removal costs:\n%s", a.confirm.Body)
+	}
+
+	want := "sudo -n install -m 600 -o deploy -g deploy " +
+		"/tmp/tui-ssh/authorized_keys /home/deploy/.ssh/authorized_keys"
+	if a.confirm.Command != want {
+		t.Errorf("previewed %q, want %q", a.confirm.Command, want)
+	}
+
+	drain(t, a, press(a, "y"))
+	ran := backend.Ran()
+	if len(ran) != 1 {
+		t.Fatalf("ran %d commands, want 1", len(ran))
+	}
+	if got := backend.Preview(ran[0]); got != want {
+		t.Errorf("ran %q, want the previewed %q", got, want)
+	}
+
+	after, _ := a.model.User("deploy")
+	if len(after.Keys) != 1 {
+		t.Fatalf("deploy has %d keys after the removal", len(after.Keys))
+	}
+	if after.Keys[0].Fingerprint != kept.Fingerprint {
+		t.Errorf("the wrong key was removed: %+v", after.Keys)
+	}
+}
+
+// TestRemovingWithoutAKeySelectedIsAHint: R on an account with no key has
+// nothing to remove, and R anywhere else is still the re-read it has always
+// been.
+func TestRemovingWithoutAKeySelectedIsAHint(t *testing.T) {
+	a, backend := newTestApp(t)
+	selectUserRow(t, a, "backup", "")
+	drain(t, a, press(a, "R"))
+	if a.mode == modeConfirm {
+		t.Errorf("a dialog opened for an account with no key")
+	}
+	if !strings.Contains(a.status, "no key selected") {
+		t.Errorf("status = %q", a.status)
+	}
+
+	// On every other screen R re-reads the server, which is what it has always
+	// done and what the help still says.
+	gotoScreen(t, a, screenConfig)
+	drain(t, a, press(a, "R"))
+	if a.mode == modeConfirm || len(backend.Ran()) != 0 {
+		t.Errorf("R on the config screen did something other than re-read")
+	}
+}
+
+// TestMatchBlocksAreWrittenLast is the rule the Match editor exists for, seen
+// from the outside: whatever is at file scope stays above the block, because
+// sshd would otherwise read it as part of it.
+func TestMatchBlocksAreWrittenLast(t *testing.T) {
+	a, backend := newTestApp(t)
+
+	// First a plain file-scope change, so the drop-in already carries one.
+	selectSetting(t, a, "PasswordAuthentication")
+	drain(t, a, press(a, "e"))
+	drain(t, a, press(a, "tab"))
+	a.form.set(fieldValue, "no", a.model, a.caps)
+	drain(t, a, press(a, "enter"))
+	drain(t, a, press(a, "y"))
+
+	// Then the same keyword back on for one account only.
+	drain(t, a, press(a, "m"))
+	if a.mode != modeForm || !a.form.match {
+		t.Fatalf("m did not open the Match editor (status: %s)", a.status)
+	}
+	a.form.set(fieldMatchType, "User", a.model, a.caps)
+	a.form.matchInput.SetValue("ana")
+	a.form.set(fieldKey, "PasswordAuthentication", a.model, a.caps)
+	a.form.set(fieldValue, "yes", a.model, a.caps)
+	drain(t, a, press(a, "enter"))
+
+	if a.mode != modeConfirm {
+		t.Fatalf("the Match form did not reach a confirm dialog (status: %s)", a.status)
+	}
+	if !strings.Contains(a.confirm.Title, "Match") &&
+		!strings.Contains(a.confirm.Title, "User ana") {
+		t.Errorf("the dialog does not name the block: %q", a.confirm.Title)
+	}
+	if !strings.Contains(a.confirm.Body, "+Match User ana") {
+		t.Errorf("the diff does not show the block:\n%s", a.confirm.Body)
+	}
+	// The caveat that makes a Match block different from a file-scope change.
+	if !strings.Contains(a.confirm.Body, "only to connections") {
+		t.Errorf("the dialog does not say the change is conditional:\n%s",
+			a.confirm.Body)
+	}
+
+	drain(t, a, press(a, "y"))
+	if len(backend.Ran()) != 4 {
+		t.Fatalf("ran %d commands over the two writes", len(backend.Ran()))
+	}
+
+	// The file the second write installed keeps the file-scope keyword above
+	// the block, which is the only order that means what it says.
+	file, ok := a.model.File(openssh.DropInPath)
+	if !ok {
+		t.Fatalf("the drop-in is not in the model")
+	}
+	scope := strings.Index(file.Raw, "PasswordAuthentication no")
+	match := strings.Index(file.Raw, "Match User ana")
+	if scope < 0 || match < 0 || scope > match {
+		t.Errorf("the file scope did not stay above the Match block:\n%s", file.Raw)
+	}
+	// And the config screen still reports the file-scope value, because that is
+	// what sshd answers for a connection the block does not select.
+	if setting, found := a.model.Setting("PasswordAuthentication"); !found ||
+		setting.Value != "no" {
+		t.Errorf("the Match block changed the value in force: %+v", setting)
+	}
+}
+
+// TestMatchFormRefusesACriteriaThatSelectsNothing: `Match Address 10.0` looks
+// fine and matches no connection at all, so it is refused on the form rather
+// than discovered afterwards.
+func TestMatchFormRefusesACriteriaThatSelectsNothing(t *testing.T) {
+	a, backend := newTestApp(t)
+	drain(t, a, press(a, "m"))
+	a.form.set(fieldMatchType, "Address", a.model, a.caps)
+	a.form.matchInput.SetValue("10.0")
+	a.form.set(fieldKey, "PasswordAuthentication", a.model, a.caps)
+	a.form.set(fieldValue, "no", a.model, a.caps)
+	drain(t, a, press(a, "enter"))
+
+	if a.mode == modeConfirm {
+		t.Errorf("the form accepted a criteria that selects nothing")
+	}
+	if len(backend.Ran()) != 0 {
+		t.Errorf("a command ran anyway")
+	}
+}
+
 func TestCancellingRunsNothing(t *testing.T) {
 	a, backend := newTestApp(t)
 	gotoScreen(t, a, screenSessions)
@@ -473,6 +793,18 @@ func TestRendersAtEveryWidth(t *testing.T) {
 		a.mode = modeForm
 		a.form = newSettingForm("PermitRootLogin", a.model, a.caps)
 		checkWidth(t, a, "form", width)
+
+		// The Match editor is two fields taller and carries the longest labels
+		// of the two, so it is the one that overflows first.
+		a.form = newMatchForm("PasswordAuthentication", a.model, a.caps)
+		a.form.matchInput.SetValue("ana,deploy")
+		checkWidth(t, a, "match form", width)
+
+		// And the key paste, whose value is longer than any terminal is wide.
+		a.mode = modePrompt
+		a.promptForKey("deploy")
+		a.input.Model.SetValue(demoKey)
+		checkWidth(t, a, "key prompt", width)
 	}
 }
 

@@ -13,8 +13,8 @@ import (
 	"github.com/tui-tools/tui-ssh/internal/ssh"
 )
 
-// screen is one of the five views the tool is made of. They are tabs rather
-// than nested screens because they answer five separate questions about the
+// screen is one of the six views the tool is made of. They are tabs rather
+// than nested screens because they answer six separate questions about the
 // same server, and a reader arrives with one of them already in mind.
 type screen int
 
@@ -24,6 +24,7 @@ const (
 	screenAuth
 	screenHostKeys
 	screenService
+	screenUsers
 	screenCount
 )
 
@@ -38,6 +39,8 @@ func (s screen) title() string {
 		return "host keys"
 	case screenService:
 		return "service"
+	case screenUsers:
+		return "users"
 	default:
 		return "config"
 	}
@@ -54,8 +57,13 @@ const (
 	modeFilter
 	modePicker
 	modeForm
+	modePrompt
 	modeHelp
 )
+
+// pickerUser is the picker that asks which account a public key is for. It is
+// not a form field, so the picker handler tells it apart by name.
+const pickerUser = "authorized-key-user"
 
 // app is the tui-ssh Bubble Tea model.
 type app struct {
@@ -74,6 +82,7 @@ type app struct {
 	sessions []ssh.Session
 	events   []ssh.AuthEvent
 	hostKeys []ssh.HostKey
+	userRows []userRow
 
 	width, height int
 	screen        screen
@@ -91,8 +100,11 @@ type app struct {
 	input   ui.Input
 	picker  ui.Picker
 	form    settingForm
-	// pickerFor names the form field an open picker is filling.
+	// pickerFor names the form field an open picker is filling, or pickerUser
+	// when the picker is choosing an account rather than filling the form.
 	pickerFor string
+	// keyUser is the account an open key paste prompt is for.
+	keyUser string
 
 	status     string
 	statusKind ui.StatusKind
@@ -259,7 +271,7 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Anything else (cursor blink, …) only concerns an open text input.
-	if a.mode == modeFilter {
+	if a.mode == modeFilter || a.mode == modePrompt {
 		cmd, _ := a.input.Update(msg)
 		return a, cmd
 	}
@@ -285,6 +297,8 @@ func (a *app) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a.handleConfirm(msg)
 	case modeFilter:
 		return a.handleFilter(msg)
+	case modePrompt:
+		return a.handlePrompt(msg)
 	case modePicker:
 		return a.handlePicker(msg)
 	case modeForm:
@@ -337,7 +351,28 @@ func (a *app) handleFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
-// handlePicker resolves the open picker, which serves the form's two fields.
+// handlePrompt resolves a one-line prompt, which today is only the public key
+// paste. It is its own mode rather than a reuse of the filter, because the
+// filter narrows what is on screen as it is typed and this one must not act on
+// anything until it is submitted.
+func (a *app) handlePrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	cmd, _ := a.input.Update(msg)
+	if !a.input.Done {
+		return a, cmd
+	}
+	accepted, value := a.input.Accepted, a.input.Value()
+	user := a.keyUser
+	a.input, a.keyUser = ui.Input{}, ""
+	a.mode = modeBrowse
+	if !accepted {
+		a.setStatus(ui.StatusInfo, "cancelled")
+		return a, nil
+	}
+	return a, a.confirmAddKey(user, value)
+}
+
+// handlePicker resolves the open picker, which serves the form's fields and
+// the account list.
 func (a *app) handlePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	a.picker.Update(msg)
 	if !a.picker.Done {
@@ -346,6 +381,16 @@ func (a *app) handlePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	choice, accepted := a.picker.Selected(), a.picker.Accepted
 	field := a.pickerFor
 	a.picker, a.pickerFor = ui.Picker{}, ""
+
+	if field == pickerUser {
+		if !accepted {
+			a.mode = modeBrowse
+			a.setStatus(ui.StatusInfo, "cancelled")
+			return a, nil
+		}
+		a.promptForKey(choice)
+		return a, nil
+	}
 	if accepted {
 		a.form.set(field, choice, a.model, a.caps)
 	}
@@ -398,21 +443,32 @@ func (a *app) handleForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // on disk and opens the confirm dialog with the check, the diff and the
 // commands that apply it.
 func (a *app) submitForm() tea.Cmd {
-	write, err := a.backend.BuildSetOption(a.model, a.form.key(), a.form.value())
+	write, err := a.buildFormPlan()
 	if err != nil {
 		a.setStatus(ui.StatusError, err.Error())
 		return nil
 	}
-	a.mode = modeConfirm
-	title := "Set " + a.form.key() + " to " + a.form.value()
-	a.confirm = ui.Confirm{
-		Title:   title,
-		Body:    a.writeBody(write),
-		Command: a.previewAll(write.Commands),
-		Danger:  true,
-		Payload: plan{title: title, commands: write.Commands},
-	}
+	a.openWriteConfirm(a.formTitle(), write)
 	return nil
+}
+
+// buildFormPlan asks the backend for the plan the open form describes, at file
+// scope or inside a Match block.
+func (a *app) buildFormPlan() (ssh.WritePlan, error) {
+	if a.form.match {
+		return a.backend.BuildSetMatchOption(a.model, a.form.matchType(),
+			a.form.matchValue(), a.form.key(), a.form.value())
+	}
+	return a.backend.BuildSetOption(a.model, a.form.key(), a.form.value())
+}
+
+// formTitle names the change on the confirm dialog and in the status line.
+func (a *app) formTitle() string {
+	title := "Set " + a.form.key() + " to " + a.form.value()
+	if a.form.match {
+		title += " for " + a.form.matchType() + " " + a.form.matchValue()
+	}
+	return title
 }
 
 // writeBody is what the confirm dialog says above the commands: whether sshd
@@ -423,7 +479,7 @@ func (a *app) writeBody(write ssh.WritePlan) string {
 	if write.Validated {
 		parts = append(parts, "✓ "+write.Validation)
 	} else if write.Validation != "" {
-		parts = append(parts, "! the syntax check "+write.Validation)
+		parts = append(parts, "! the check "+write.Validation)
 	}
 	if write.Warning != "" {
 		parts = append(parts, write.Warning)
@@ -466,7 +522,7 @@ func (a *app) handleBrowseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.gotoScreen((a.screen + 1) % screenCount)
 	case "shift+tab", "h", "left":
 		a.gotoScreen((a.screen + screenCount - 1) % screenCount)
-	case "1", "2", "3", "4", "5":
+	case "1", "2", "3", "4", "5", "6":
 		a.gotoScreen(screen(msg.String()[0] - '1'))
 	case "/":
 		a.input = ui.NewInput("Filter "+a.screen.title(), "any column…", a.filter)
@@ -478,7 +534,17 @@ func (a *app) handleBrowseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.mode, a.detailOffset = modeDetail, 0
-	case "R", "ctrl+r":
+	case "R":
+		// On the users screen R removes the selected key; everywhere else it is
+		// the re-read it has always been. The two never overlap: a key can only
+		// be selected on the one screen that lists keys, and ctrl+r re-reads
+		// from there too.
+		if a.screen == screenUsers {
+			return a, a.confirmRemoveKey()
+		}
+		a.loading = true
+		return a, a.load()
+	case "ctrl+r":
 		a.loading = true
 		return a, a.load()
 	default:
@@ -512,7 +578,17 @@ func (a *app) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "pgup", "ctrl+b":
 		a.detailOffset = max(a.detailOffset-a.detailHeight(), 0)
 		return a, nil
-	case "R", "ctrl+r":
+	case "R":
+		// On the users screen R removes the selected key; everywhere else it is
+		// the re-read it has always been. The two never overlap: a key can only
+		// be selected on the one screen that lists keys, and ctrl+r re-reads
+		// from there too.
+		if a.screen == screenUsers {
+			return a, a.confirmRemoveKey()
+		}
+		a.loading = true
+		return a, a.load()
+	case "ctrl+r":
 		a.loading = true
 		return a, a.load()
 	default:
@@ -525,6 +601,10 @@ func (a *app) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 	switch msg.String() {
 	case "e":
 		return a.openForm()
+	case "m":
+		return a.openMatchForm()
+	case "A":
+		return a.pickKeyUser()
 	case "t":
 		return a.confirmTerminate()
 	case "b":
@@ -572,6 +652,118 @@ func (a *app) openForm() tea.Cmd {
 	a.form = newSettingForm(key, a.model, a.caps)
 	a.mode = modeForm
 	return nil
+}
+
+// openMatchForm opens the same editor with the two criteria fields in front of
+// it, so the keyword applies to some connections rather than to the server.
+func (a *app) openMatchForm() tea.Cmd {
+	if !a.caps.SupportsEdit || !a.caps.SupportsMatch {
+		a.setStatus(ui.StatusWarn, "this backend has no Match blocks to write")
+		return nil
+	}
+	if len(a.caps.EditableKeys) == 0 || len(a.caps.MatchTypes) == 0 {
+		a.setStatus(ui.StatusWarn, "this backend offers no editable settings")
+		return nil
+	}
+	key := a.caps.EditableKeys[0]
+	if setting, ok := a.selectedSetting(); ok && a.editable(setting.Key) {
+		key = setting.Key
+	}
+	a.form = newMatchForm(key, a.model, a.caps)
+	// A Match block is nearly always about an account, and the users screen and
+	// the sessions screen both have one selected: seeding the criteria from it
+	// saves the typing that a mistyped account name would waste.
+	if user, ok := a.selectedAccount(); ok {
+		a.form.matchInput.SetValue(user)
+	}
+	a.mode = modeForm
+	return nil
+}
+
+// pickKeyUser starts the add-a-key flow: which account, then the key itself.
+func (a *app) pickKeyUser() tea.Cmd {
+	if !a.caps.SupportsAuthorizedKeys {
+		a.setStatus(ui.StatusWarn, "this backend cannot manage authorized keys")
+		return nil
+	}
+	names := a.model.UserNames()
+	if len(names) == 0 {
+		a.setStatus(ui.StatusWarn,
+			"no local account could be read — /etc/passwd was not readable")
+		return nil
+	}
+	current := names[0]
+	if user, ok := a.selectedAccount(); ok {
+		current = user
+	}
+	a.pickerFor = pickerUser
+	a.picker = ui.NewPicker("Add a public key to which account?", names, current)
+	a.mode = modePicker
+	return nil
+}
+
+// promptForKey asks for the key itself, once the account is known.
+func (a *app) promptForKey(user string) {
+	a.keyUser = user
+	a.input = ui.NewInput("Public key for "+user,
+		"ssh-ed25519 AAAAC3… you@laptop", "")
+	a.input.Model.CharLimit = maxPastedKeyBytes
+	a.input.Help = "Paste the contents of a .pub file — never the private half. " +
+		"It is checked with ssh-keygen before anything is written."
+	a.mode = modePrompt
+}
+
+// maxPastedKeyBytes bounds the paste. An RSA-4096 public key line is a little
+// over 750 bytes, so this leaves room for a long comment and refuses a paste
+// that is plainly a whole file.
+const maxPastedKeyBytes = 2048
+
+// confirmAddKey builds the plan that adds a key and opens the confirm dialog.
+func (a *app) confirmAddKey(user, pasted string) tea.Cmd {
+	write, err := a.backend.BuildAddAuthorizedKey(a.model, user, pasted)
+	if err != nil {
+		a.setStatus(ui.StatusError, err.Error())
+		return nil
+	}
+	title := "Add a public key to " + user
+	a.openWriteConfirm(title, write)
+	return nil
+}
+
+// confirmRemoveKey builds the plan that takes the selected key away.
+func (a *app) confirmRemoveKey() tea.Cmd {
+	if !a.caps.SupportsAuthorizedKeys {
+		a.setStatus(ui.StatusWarn, "this backend cannot manage authorized keys")
+		return nil
+	}
+	row, ok := a.selectedUserRow()
+	if !ok || !row.hasKey {
+		a.setStatus(ui.StatusWarn,
+			"no key selected — press 6 for the users screen and pick a key row")
+		return nil
+	}
+	write, err := a.backend.BuildRemoveAuthorizedKey(a.model, row.user.Name,
+		row.key.Fingerprint)
+	if err != nil {
+		a.setStatus(ui.StatusError, err.Error())
+		return nil
+	}
+	title := "Remove " + row.key.Fingerprint + " from " + row.user.Name
+	a.openWriteConfirm(title, write)
+	return nil
+}
+
+// openWriteConfirm shows a write plan: the check, the caveat, the diff, and
+// every command that applies it.
+func (a *app) openWriteConfirm(title string, write ssh.WritePlan) {
+	a.mode = modeConfirm
+	a.confirm = ui.Confirm{
+		Title:   title,
+		Body:    a.writeBody(write),
+		Command: a.previewAll(write.Commands),
+		Danger:  true,
+		Payload: plan{title: title, commands: write.Commands},
+	}
 }
 
 // editable reports whether a keyword is one the guided editor offers.
@@ -719,7 +911,48 @@ func (a *app) applyFilter() {
 			a.hostKeys = append(a.hostKeys, key)
 		}
 	}
+	a.userRows = nil
+	for _, row := range userRowsOf(a.model.Users) {
+		if keep(userRowHaystack(row)) {
+			a.userRows = append(a.userRows, row)
+		}
+	}
 	a.clampCursor()
+}
+
+// userRow is one line of the users screen: one public key of one account, or
+// an account that has none.
+//
+// An account with no key is a row rather than an omission, because "nobody can
+// log into backup with a key" is exactly as much of an answer as a list of
+// fingerprints is, and an account missing from the screen would read as an
+// account missing from the machine.
+type userRow struct {
+	user   ssh.User
+	key    ssh.AuthorizedKey
+	hasKey bool
+}
+
+// userRowsOf flattens the accounts into rows, in the order they were read.
+func userRowsOf(users []ssh.User) []userRow {
+	var rows []userRow
+	for _, user := range users {
+		if len(user.Keys) == 0 {
+			rows = append(rows, userRow{user: user})
+			continue
+		}
+		for _, key := range user.Keys {
+			rows = append(rows, userRow{user: user, key: key, hasKey: true})
+		}
+	}
+	return rows
+}
+
+// userRowHaystack is the text the filter matches a users row against.
+func userRowHaystack(row userRow) string {
+	return strings.Join([]string{row.user.Name, row.user.Home, row.user.KeysPath,
+		row.key.Type, row.key.Fingerprint, row.key.Comment, row.key.Options,
+		row.user.Unreadable}, " ")
 }
 
 // settingHaystack is the text the filter matches a setting against.
@@ -747,9 +980,36 @@ func (a *app) rowCount() int {
 		return len(a.hostKeys)
 	case screenService:
 		return len(a.serviceRows())
+	case screenUsers:
+		return len(a.userRows)
 	default:
 		return len(a.settings)
 	}
+}
+
+// selectedUserRow is the highlighted row of the users screen.
+func (a *app) selectedUserRow() (userRow, bool) {
+	if a.screen != screenUsers {
+		return userRow{}, false
+	}
+	index := a.cursor[screenUsers]
+	if index < 0 || index >= len(a.userRows) {
+		return userRow{}, false
+	}
+	return a.userRows[index], true
+}
+
+// selectedAccount is the account the highlighted row is about, wherever the
+// reader is: the users screen names one directly, and a live session names the
+// account somebody is logged in as.
+func (a *app) selectedAccount() (string, bool) {
+	if row, ok := a.selectedUserRow(); ok {
+		return row.user.Name, true
+	}
+	if session, ok := a.selectedSession(); ok && session.User != "" {
+		return session.User, true
+	}
+	return "", false
 }
 
 // selectedSetting is the highlighted row of the config screen.

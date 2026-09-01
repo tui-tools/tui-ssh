@@ -160,6 +160,9 @@ var capabilities = ssh.Capabilities{
 	SupportsEdit:               true,
 	SupportsTerminate:          true,
 	SupportsRegenerateHostKeys: true,
+	SupportsAuthorizedKeys:     true,
+	SupportsMatch:              true,
+	MatchTypes:                 MatchTypes,
 	EditableKeys:               editableOrder,
 	Choices:                    choiceMap(),
 	Help:                       helpMap(),
@@ -281,7 +284,7 @@ const dropInHeader = "# Written by tui-ssh, and rewritten whole on every change.
 	"# above this file's Include in " + ConfigPath + " wins over what is here.\n"
 
 // RenderDropIn produces the new text of the drop-in file: everything it says
-// today, with one keyword set or replaced.
+// today, with one keyword set or replaced at file scope.
 //
 // The whole file is regenerated rather than appended to, because a drop-in that
 // grew by appending would end up with the same keyword three times and sshd
@@ -292,45 +295,208 @@ func RenderDropIn(existing, key, value string) (string, error) {
 	if err := CheckValue(key, value); err != nil {
 		return "", err
 	}
+	blocks := parseDropInBlocks(existing)
+	blocks[0].settings = setSetting(blocks[0].settings, key, value)
+	return renderDropInBlocks(blocks), nil
+}
 
-	settings := parseDropIn(existing)
-	replaced := false
+// RenderMatchDropIn produces the new text of the drop-in file with one keyword
+// set inside a `Match` block.
+//
+// The block goes at the end, and every Match block stays at the end, because
+// that is not a style choice: sshd reads everything following a Match line as
+// part of that block until the next Match or the end of the file. A keyword
+// written at file scope *after* a Match block would silently become part of it,
+// applying to some connections and not to others — so the renderer keeps the
+// whole file in the one order that means what it says.
+func RenderMatchDropIn(existing, matchType, matchValue, key, value string) (string, error) {
+	criteria, err := MatchCriteria(matchType, matchValue)
+	if err != nil {
+		return "", err
+	}
+	key = canonicalKey(key)
+	if err := CheckValue(key, value); err != nil {
+		return "", err
+	}
+
+	blocks := parseDropInBlocks(existing)
+	for i := 1; i < len(blocks); i++ {
+		if strings.EqualFold(blocks[i].criteria, criteria) {
+			blocks[i].settings = setSetting(blocks[i].settings, key, value)
+			return renderDropInBlocks(blocks), nil
+		}
+	}
+	blocks = append(blocks, dropInBlock{
+		criteria: criteria,
+		settings: []dropInSetting{{key: key, value: value}},
+	})
+	return renderDropInBlocks(blocks), nil
+}
+
+// setSetting replaces a keyword's value, or appends it when the block does not
+// carry it yet.
+func setSetting(settings []dropInSetting, key, value string) []dropInSetting {
 	for i := range settings {
 		if strings.EqualFold(settings[i].key, key) {
 			settings[i] = dropInSetting{key: key, value: value}
-			replaced = true
-			break
+			return settings
 		}
 	}
-	if !replaced {
-		settings = append(settings, dropInSetting{key: key, value: value})
-	}
-
-	var b strings.Builder
-	b.WriteString(dropInHeader)
-	b.WriteString("\n")
-	for _, setting := range settings {
-		fmt.Fprintf(&b, "%s %s\n", setting.key, setting.value)
-	}
-	return b.String(), nil
+	return append(settings, dropInSetting{key: key, value: value})
 }
 
 // dropInSetting is one keyword of the generated file.
 type dropInSetting struct{ key, value string }
 
-// parseDropIn reads the keywords out of the file tui-ssh wrote last time. It
-// ignores comments, because the file is generated and its only comments are
-// the banner this package puts back.
+// dropInBlock is one scope of the generated file: the file scope, whose
+// criteria is empty, or one `Match` block.
+type dropInBlock struct {
+	criteria string
+	settings []dropInSetting
+}
+
+// matchIndent is what a keyword inside a Match block is written with. sshd does
+// not care; a reader opening the file does.
+const matchIndent = "    "
+
+// renderDropInBlocks writes the file: the banner, the file-scope keywords, then
+// every Match block. The order is the contract — see RenderMatchDropIn.
+func renderDropInBlocks(blocks []dropInBlock) string {
+	var b strings.Builder
+	b.WriteString(dropInHeader)
+	b.WriteString("\n")
+	for _, setting := range blocks[0].settings {
+		fmt.Fprintf(&b, "%s %s\n", setting.key, setting.value)
+	}
+	for _, block := range blocks[1:] {
+		if len(block.settings) == 0 {
+			continue
+		}
+		fmt.Fprintf(&b, "\nMatch %s\n", block.criteria)
+		for _, setting := range block.settings {
+			fmt.Fprintf(&b, "%s%s %s\n", matchIndent, setting.key, setting.value)
+		}
+	}
+	return b.String()
+}
+
+// parseDropIn reads the file-scope keywords out of the file tui-ssh wrote last
+// time. It ignores comments, because the file is generated and its only
+// comments are the banner this package puts back.
 func parseDropIn(text string) []dropInSetting {
-	var out []dropInSetting
+	return parseDropInBlocks(text)[0].settings
+}
+
+// parseDropInBlocks reads the generated file into its scopes. The first block
+// is always the file scope, even when the file is empty, so a caller can set a
+// keyword on it without checking.
+func parseDropInBlocks(text string) []dropInBlock {
+	blocks := []dropInBlock{{}}
 	for _, line := range strings.Split(text, "\n") {
 		key, value, ok := splitDirective(line)
 		if !ok {
 			continue
 		}
-		out = append(out, dropInSetting{key: canonicalKey(key), value: value})
+		if strings.EqualFold(key, "Match") {
+			blocks = append(blocks, dropInBlock{criteria: value})
+			continue
+		}
+		current := &blocks[len(blocks)-1]
+		current.settings = append(current.settings,
+			dropInSetting{key: canonicalKey(key), value: value})
 	}
-	return out
+	return blocks
+}
+
+// The criteria a Match block can select on, in the order the form offers them.
+//
+// sshd accepts more of them — LocalAddress, LocalPort, RDomain, and the
+// all-caps All — but these three are the ones an administrator reaches for, and
+// each is a value this tool can check before writing it. A criteria that cannot
+// be validated is not one a guided form should be able to produce.
+const (
+	MatchUser    = "User"
+	MatchGroup   = "Group"
+	MatchAddress = "Address"
+)
+
+// MatchTypes is that list, in the order the form offers it.
+var MatchTypes = []string{MatchUser, MatchGroup, MatchAddress}
+
+// matchNameRe accepts one user or group pattern of a Match criteria: the same
+// character set AllowUsers takes, with the globs sshd itself expands.
+var matchNameRe = regexp.MustCompile(`^[A-Za-z0-9_*?.@-]{1,64}$`)
+
+// MatchCriteria validates a criteria and renders it as sshd writes it.
+//
+// The value is a comma-separated list, which is sshd's own grammar: `Match User
+// ana,deploy` selects either. Each item is checked on its own, and an address
+// item is parsed as an address or a network rather than pattern-matched, so
+// `Match Address 10.0` — which looks fine and selects nothing — is refused here
+// instead of being discovered later.
+func MatchCriteria(matchType, matchValue string) (string, error) {
+	canonical := ""
+	for _, candidate := range MatchTypes {
+		if strings.EqualFold(candidate, matchType) {
+			canonical = candidate
+		}
+	}
+	if canonical == "" {
+		return "", fmt.Errorf("openssh: a Match block selects on %s, not %q",
+			strings.Join(MatchTypes, ", "), matchType)
+	}
+
+	value := strings.TrimSpace(matchValue)
+	if value == "" {
+		return "", fmt.Errorf("openssh: Match %s needs a value", canonical)
+	}
+	if strings.ContainsAny(value, "\n\r# \t") {
+		return "", fmt.Errorf(
+			"openssh: a Match %s value is one comma-separated list, with no "+
+				"spaces and no comment", canonical)
+	}
+	items := strings.Split(value, ",")
+	if len(items) > maxMatchItems {
+		return "", fmt.Errorf("openssh: %d is more patterns than this form writes",
+			len(items))
+	}
+	for _, item := range items {
+		if err := checkMatchItem(canonical, item); err != nil {
+			return "", err
+		}
+	}
+	return canonical + " " + value, nil
+}
+
+// maxMatchItems bounds the comma-separated list, so a paste cannot turn into a
+// line nothing on the confirm dialog can show in full.
+const maxMatchItems = 32
+
+// checkMatchItem validates one item of a criteria's list.
+func checkMatchItem(matchType, item string) error {
+	if matchType != MatchAddress {
+		if !matchNameRe.MatchString(item) {
+			return fmt.Errorf("openssh: %q is not a %s pattern",
+				item, strings.ToLower(matchType))
+		}
+		return nil
+	}
+	// sshd negates an address pattern with a leading '!', which is part of the
+	// grammar rather than part of the address.
+	address := strings.TrimPrefix(item, "!")
+	if address == "*" {
+		return nil
+	}
+	if strings.Contains(address, "/") {
+		if _, err := netip.ParsePrefix(address); err != nil {
+			return fmt.Errorf("openssh: %q is not a network in CIDR form", item)
+		}
+		return nil
+	}
+	if _, err := netip.ParseAddr(address); err != nil {
+		return fmt.Errorf("openssh: %q is not an IP address or a CIDR network", item)
+	}
+	return nil
 }
 
 // unitRe is the set of characters a systemd unit name may contain. The unit

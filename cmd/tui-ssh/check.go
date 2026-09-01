@@ -72,6 +72,13 @@ type checkReport struct {
 
 	HostKeys []hostKeyReport `json:"hostKeys"`
 
+	// Accounts is how many local accounts somebody could log into, and
+	// AuthorizedKeys how many public keys are on them in total. Both are counts
+	// a script can assert on without walking the model — "this machine grew a
+	// key it should not have" is a check worth being one line.
+	Accounts       int `json:"accounts"`
+	AuthorizedKeys int `json:"authorizedKeys"`
+
 	// Unit, Active and Enabled are the service state under the names a script
 	// can grep for without reading the nested model.
 	Unit    string `json:"unit"`
@@ -122,6 +129,10 @@ func runCheck(backend ssh.Backend, backendCompat compat.Result,
 		Enabled:         model.Service.Enabled,
 		Compat:          backendCompat,
 		Model:           model,
+		Accounts:        len(model.Users),
+	}
+	for _, user := range model.Users {
+		report.AuthorizedKeys += len(user.Keys)
 	}
 	for _, setting := range model.Settings {
 		if !setting.Security {

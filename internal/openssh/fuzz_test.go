@@ -295,3 +295,70 @@ func FuzzParseDropIn(f *testing.F) {
 		}
 	})
 }
+
+// FuzzParseAuthorizedKey reads a file this tool did not write and then rewrites
+// it. A line misread here removes the wrong key from somebody's account, so
+// what is asserted is what a rewrite depends on: a key that parsed carries a
+// fingerprint of the one shape, and Raw is exactly the line it came from.
+func FuzzParseAuthorizedKey(f *testing.F) {
+	for _, content := range demoAuthorizedKeys {
+		f.Add(content)
+	}
+	f.Add("")
+	f.Add("\n\n")
+	f.Add("#\n")
+	f.Add("ssh-ed25519\n")
+	f.Add(`from="10.0.0.0/8",no-pty ssh-ed25519 AAAA x`)
+	f.Fuzz(func(t *testing.T, raw string) {
+		lines := strings.Split(strings.TrimSuffix(raw, "\n"), "\n")
+		for _, key := range ParseAuthorizedKeys(raw) {
+			if !fingerprintRe.MatchString(key.Fingerprint) {
+				t.Fatalf("accepted a key whose fingerprint is %q", key.Fingerprint)
+			}
+			if key.Line < 1 || key.Line > len(lines) {
+				t.Fatalf("line %d is outside the %d lines read", key.Line, len(lines))
+			}
+			if key.Raw != strings.TrimSpace(lines[key.Line-1]) {
+				t.Fatalf("Raw is not the line it came from: %q", key.Raw)
+			}
+			if strings.ContainsAny(key.Raw, "\n\r") {
+				t.Fatalf("a key line spans lines: %q", key.Raw)
+			}
+			if key.Bits < 0 {
+				t.Fatalf("negative key size: %d", key.Bits)
+			}
+			// Removing that key must leave a file that no longer carries it,
+			// and must never invent one.
+			after, err := RenderAuthorizedKeysWithout(raw, key.Fingerprint)
+			if err != nil {
+				t.Fatalf("a key that parsed could not be removed: %v", err)
+			}
+			for _, remaining := range ParseAuthorizedKeys(after) {
+				if remaining.Fingerprint == key.Fingerprint {
+					t.Fatalf("the key survived its own removal: %q", key.Fingerprint)
+				}
+			}
+		}
+	})
+}
+
+// FuzzParsePasswd reads the account list. Every account it returns is one the
+// picker offers and one a root-owned `install` is then built for, so the
+// invariant is that a parsed account is an account CheckUser accepts.
+func FuzzParsePasswd(f *testing.F) {
+	f.Add(demoPasswd)
+	f.Add("")
+	f.Add("root:x:0:0:root:/root:/bin/bash")
+	f.Add("a:b:c:d:e:f:g\n:::::::\n")
+	f.Fuzz(func(t *testing.T, raw string) {
+		for _, user := range ParsePasswd(raw, ParseGroups(raw)) {
+			if err := CheckUser(user); err != nil {
+				t.Fatalf("offered an account the command builders refuse: %v", err)
+			}
+			if user.KeysPath != AuthorizedKeysPathFor(user.Home) {
+				t.Fatalf("keys path %q is not derived from the home %q",
+					user.KeysPath, user.Home)
+			}
+		}
+	})
+}

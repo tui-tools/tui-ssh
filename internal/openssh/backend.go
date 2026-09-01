@@ -262,6 +262,7 @@ func (r *Real) Load(ctx context.Context, window string) (ssh.Model, error) {
 	model.Service = r.loadService(ctx)
 	model.Sessions = r.loadSessions(ctx, model.Port())
 	model.HostKeys = JudgeHostKeys(r.loadHostKeys(ctx))
+	model.Users = r.loadUsers(ctx)
 	model.Firewall = r.detectFirewall(ctx)
 
 	auth, err := r.LoadAuth(ctx, model, window)
@@ -494,6 +495,28 @@ func (r *Real) loadHostKeys(ctx context.Context) []ssh.HostKey {
 	return keys
 }
 
+// loadUsers reads the local accounts and the public keys that can log into
+// them.
+//
+// /etc/passwd and /etc/group are world-readable, so the account list costs
+// nothing. The key files are not: another account's ~/.ssh is mode 700, so
+// reading it goes through the same escalated fallback a mode 0600 sshd_config
+// does — and when that is not permitted either, the account is listed with the
+// reason rather than with an empty key list that would read as "nobody has a
+// key here".
+func (r *Real) loadUsers(ctx context.Context) []ssh.User {
+	read := r.readConfigFile(ctx)
+	passwd, err := read(PasswdPath)
+	if err != nil {
+		return nil
+	}
+	groups := map[int]string{}
+	if raw, groupErr := read(GroupPath); groupErr == nil {
+		groups = ParseGroups(raw)
+	}
+	return LoadAuthorizedKeys(ParsePasswd(passwd, groups), read)
+}
+
 // detectFirewall reports which firewall is actually running, which is what
 // decides whether blocking an address is an offer or a hint.
 func (r *Real) detectFirewall(ctx context.Context) string {
@@ -522,14 +545,47 @@ func (r *Real) detectFirewall(ctx context.Context) string {
 // startup path do.
 func (r *Real) BuildSetOption(model ssh.Model, key, value string) (ssh.WritePlan, error) {
 	key = WriteKeyFor(key, r.caps.Has(FeatureKbdInteractive))
-	before := ""
-	if file, ok := model.File(DropInPath); ok {
-		before = file.Raw
-	}
+	before := currentDropIn(model)
 	content, err := RenderDropIn(before, key, value)
 	if err != nil {
 		return ssh.WritePlan{}, err
 	}
+	return r.buildDropInPlan(model, before, content, warningFor(model, key, value))
+}
+
+// BuildSetMatchOption does the same for a keyword inside a `Match` block: the
+// same file, the same check, the same two commands, with the block appended
+// after everything at file scope.
+func (r *Real) BuildSetMatchOption(model ssh.Model, matchType, matchValue,
+	key, value string) (ssh.WritePlan, error) {
+	key = WriteKeyFor(key, r.caps.Has(FeatureKbdInteractive))
+	before := currentDropIn(model)
+	content, err := RenderMatchDropIn(before, matchType, matchValue, key, value)
+	if err != nil {
+		return ssh.WritePlan{}, err
+	}
+	criteria, err := MatchCriteria(matchType, matchValue)
+	if err != nil {
+		return ssh.WritePlan{}, err
+	}
+	return r.buildDropInPlan(model, before, content,
+		matchWarningFor(model, criteria, key, value))
+}
+
+// currentDropIn is what the file tui-ssh owns says today, empty when it does
+// not exist yet.
+func currentDropIn(model ssh.Model) string {
+	if file, ok := model.File(DropInPath); ok {
+		return file.Raw
+	}
+	return ""
+}
+
+// buildDropInPlan stages a rendered drop-in, has sshd parse it, and returns the
+// plan that installs and applies it. It is shared by the file-scope editor and
+// the Match block editor, so both are gated by the same check.
+func (r *Real) buildDropInPlan(model ssh.Model, before, content,
+	warning string) (ssh.WritePlan, error) {
 	if before == content {
 		return ssh.WritePlan{}, fmt.Errorf("%s already says exactly this", DropInPath)
 	}
@@ -543,7 +599,7 @@ func (r *Real) BuildSetOption(model ssh.Model, key, value string) (ssh.WritePlan
 		Content:  content,
 		Diff:     Diff(DropInPath, before, content),
 		TempPath: temp,
-		Warning:  warningFor(model, key, value),
+		Warning:  warning,
 	}
 
 	validate, err := BuildValidate(temp)
@@ -618,6 +674,244 @@ func warningFor(model ssh.Model, key, value string) string {
 				"With keys off, a password is the only way in — and if "+
 					"PasswordAuthentication is also no, nothing is.")
 		}
+	}
+	return strings.Join(warnings, "\n\n")
+}
+
+// matchWarningFor is what the confirm dialog must say about a keyword written
+// inside a Match block, which is not the same caveat a file-scope change gets.
+//
+// The shadowing warning does not apply — a Match block is read after the file
+// scope on purpose, and beating it is the point — but two other things do: what
+// the block actually selects, and the fact that a block nobody matches is a
+// setting that silently never applies.
+func matchWarningFor(model ssh.Model, criteria, key, value string) string {
+	warnings := []string{fmt.Sprintf(
+		"This applies only to connections matching `%s`. Everything else keeps "+
+			"the value at file scope, which is what the config screen shows.",
+		criteria)}
+
+	if _, ok := IncludeSite(model.Files); !ok {
+		warnings = append(warnings, fmt.Sprintf(
+			"Nothing in %s includes %s, so this file will not be read at all. "+
+				"Add `Include %s/*.conf` at the top of %s first.",
+			ConfigPath, DropInDir, DropInDir, ConfigPath))
+	}
+	if canonicalKey(key) == "PasswordAuthentication" && value == "no" {
+		warnings = append(warnings,
+			"Make sure the accounts this block selects already have a working "+
+				"key: after the reload a password will not get them in.")
+	}
+	return strings.Join(warnings, "\n\n")
+}
+
+// BuildAddAuthorizedKey adds one public key to an account's authorized_keys.
+//
+// The pasted key is staged and handed to `ssh-keygen -lf` before the user is
+// asked anything, for the same reason the drop-in is handed to `sshd -t -f`:
+// the program that reads this file for real is the one that decides whether
+// what was pasted is a key, and the fingerprint it prints is what the dialog
+// then shows — not one this tool worked out for itself.
+func (r *Real) BuildAddAuthorizedKey(model ssh.Model, name,
+	pasted string) (ssh.WritePlan, error) {
+	user, before, err := r.prepareKeyChange(model, name)
+	if err != nil {
+		return ssh.WritePlan{}, err
+	}
+	pastedKey, err := CheckPublicKey(pasted)
+	if err != nil {
+		return ssh.WritePlan{}, err
+	}
+	content, err := RenderAuthorizedKeysWith(before, pastedKey)
+	if err != nil {
+		return ssh.WritePlan{}, err
+	}
+
+	plan, temp, err := r.stageKeyFile(user, before, content)
+	if err != nil {
+		return ssh.WritePlan{}, err
+	}
+	plan.Warning = addKeyWarning(model, user, pastedKey)
+	r.checkStagedKey(&plan, temp, pastedKey)
+
+	createDir, err := BuildCreateSSHDir(user)
+	if err != nil {
+		return ssh.WritePlan{}, err
+	}
+	install, err := BuildInstallAuthorizedKeys(temp, user)
+	if err != nil {
+		return ssh.WritePlan{}, err
+	}
+	plan.Commands = []ssh.Command{createDir, install}
+	return plan, nil
+}
+
+// BuildRemoveAuthorizedKey rewrites an account's authorized_keys without the
+// key of this fingerprint.
+//
+// The file is staged and installed exactly the way adding one is: the same
+// mode, the same owner, and the same diff on screen first. Nothing is edited in
+// place, so a rewrite that goes wrong leaves the file it was going to replace
+// untouched.
+func (r *Real) BuildRemoveAuthorizedKey(model ssh.Model, name,
+	fingerprint string) (ssh.WritePlan, error) {
+	user, before, err := r.prepareKeyChange(model, name)
+	if err != nil {
+		return ssh.WritePlan{}, err
+	}
+	content, err := RenderAuthorizedKeysWithout(before, fingerprint)
+	if err != nil {
+		return ssh.WritePlan{}, err
+	}
+
+	plan, temp, err := r.stageKeyFile(user, before, content)
+	if err != nil {
+		return ssh.WritePlan{}, err
+	}
+	plan.Warning = removeKeyWarning(model, user, fingerprint)
+	plan.Validated, plan.Validation = true,
+		"the remaining keys are copied through unchanged"
+
+	install, err := BuildInstallAuthorizedKeys(temp, user)
+	if err != nil {
+		return ssh.WritePlan{}, err
+	}
+	plan.Commands = []ssh.Command{install}
+	return plan, nil
+}
+
+// prepareKeyChange resolves the account and reads its key file as it is now.
+func (r *Real) prepareKeyChange(model ssh.Model,
+	name string) (ssh.User, string, error) {
+	user, ok := model.User(name)
+	if !ok {
+		return ssh.User{}, "",
+			fmt.Errorf("openssh: %q is not an account on this machine", name)
+	}
+	if err := CheckUser(user); err != nil {
+		return ssh.User{}, "", err
+	}
+	if user.Unreadable != "" {
+		return ssh.User{}, "", fmt.Errorf(
+			"openssh: %s could not be read, so it will not be rewritten: %s",
+			user.KeysPath, runner.FirstLine(user.Unreadable))
+	}
+	// The file is re-read here rather than taken from the model: what is
+	// rewritten has to be what is on disk now, not what was on disk when the
+	// screen was last loaded.
+	before, err := r.readConfigFile(context.Background())(user.KeysPath)
+	if err != nil && !isNotExist(err) {
+		return ssh.User{}, "", fmt.Errorf(
+			"openssh: %s could not be read: %s", user.KeysPath,
+			runner.FirstLine(err.Error()))
+	}
+	if err != nil {
+		before = ""
+	}
+	return user, before, nil
+}
+
+// stageKeyFile writes the pending authorized_keys and starts the plan around
+// it.
+func (r *Real) stageKeyFile(user ssh.User, before,
+	content string) (ssh.WritePlan, string, error) {
+	if before == content {
+		return ssh.WritePlan{}, "", fmt.Errorf("%s already says exactly this",
+			user.KeysPath)
+	}
+	temp, err := stageFile(user.KeysPath, content)
+	if err != nil {
+		return ssh.WritePlan{}, "", err
+	}
+	return ssh.WritePlan{
+		Path:     user.KeysPath,
+		Content:  content,
+		Diff:     Diff(user.KeysPath, before, content),
+		TempPath: temp,
+	}, temp, nil
+}
+
+// checkStagedKey asks ssh-keygen to read the staged file and records what it
+// said. A key ssh-keygen refuses stops the plan; a check that could not run at
+// all is reported on the dialog rather than treated as a pass.
+func (r *Real) checkStagedKey(plan *ssh.WritePlan, temp string,
+	key ssh.AuthorizedKey) {
+	fingerprint, err := BuildFingerprintKey(temp)
+	if err != nil {
+		plan.Validation = "could not run: " + err.Error()
+		return
+	}
+	plan.ValidationCommand = r.Preview(fingerprint)
+	out, err := r.Run(context.Background(), fingerprint)
+	switch {
+	case err != nil:
+		plan.Validation = "could not run: " + runner.FirstLine(err.Error())
+	default:
+		plan.Validated = true
+		plan.Validation = "ssh-keygen reads the new key as " +
+			reportedFingerprint(out, key)
+	}
+}
+
+// reportedFingerprint is the line ssh-keygen printed for the key that was just
+// added, which is the last line of the staged file it read.
+func reportedFingerprint(out string, key ssh.AuthorizedKey) string {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.Contains(lines[i], key.Fingerprint) {
+			return strings.TrimSpace(lines[i])
+		}
+	}
+	return key.Label()
+}
+
+// addKeyWarning is what the confirm dialog must say about adding a key: what it
+// grants, and the settings that would stop it working.
+func addKeyWarning(model ssh.Model, user ssh.User, key ssh.AuthorizedKey) string {
+	warnings := []string{fmt.Sprintf(
+		"Whoever holds the private half of %s can then log in as %s, from "+
+			"anywhere the firewall allows.", key.Fingerprint, user.Name)}
+
+	if setting, ok := model.Setting("PubkeyAuthentication"); ok &&
+		strings.EqualFold(setting.Value, "no") {
+		warnings = append(warnings,
+			"PubkeyAuthentication is no on this server, so this key will not be "+
+				"accepted until that changes.")
+	}
+	if user.Name == "root" {
+		if setting, ok := model.Setting("PermitRootLogin"); ok &&
+			strings.EqualFold(setting.Value, "no") {
+			warnings = append(warnings,
+				"PermitRootLogin is no, so root cannot log in with this key "+
+					"either. That is usually the setting you want to keep.")
+		}
+	}
+	return strings.Join(warnings, "\n\n")
+}
+
+// removeKeyWarning is the other half: taking a key away can be the thing that
+// ends somebody's access, including your own.
+func removeKeyWarning(model ssh.Model, user ssh.User, fingerprint string) string {
+	warnings := []string{fmt.Sprintf(
+		"Whoever holds the private half of %s loses access as %s.",
+		fingerprint, user.Name)}
+
+	remaining := 0
+	for _, key := range user.Keys {
+		if key.Fingerprint != fingerprint {
+			remaining++
+		}
+	}
+	if remaining > 0 {
+		return strings.Join(warnings, "\n\n")
+	}
+	warnings = append(warnings, fmt.Sprintf(
+		"This is the last key %s has.", user.Name))
+	if setting, ok := model.Setting("PasswordAuthentication"); ok &&
+		strings.EqualFold(setting.Value, "no") {
+		warnings = append(warnings,
+			"PasswordAuthentication is no, so after this there is no way into "+
+				"that account over SSH at all. Keep a second session open.")
 	}
 	return strings.Join(warnings, "\n\n")
 }

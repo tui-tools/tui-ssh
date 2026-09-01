@@ -3,7 +3,7 @@
   "name": "tui-ssh",
   "binary": "tui-ssh",
   "tagline": "The SSH server as it really is, with every change previewed before it runs",
-  "description": "A terminal UI for the machine's SSH server. It asks sshd what its configuration actually is — `sshd -T`, not what a file says — and shows the settings that decide who gets in first, each with a verdict and the file and line that set it.\n\nFour more screens complete the picture: who is logged in right now and a way to end a session; what the authentication log says over the last day or week, with the addresses and accounts being tried; the host keys and their fingerprints; and the unit, its sockets and whether a brute-force blocker is installed.\n\nChanges go to a drop-in: tui-ssh never rewrites /etc/ssh/sshd_config. It writes 90-tui-ssh.conf, checks the staged file with `sshd -t -f` before asking anything, and shows the diff and both commands. sshd takes the first value it is given, so the include order is read too: if another file already sets the keyword earlier, the tool says so instead of writing a line that would be ignored.\n\nRun `tui-ssh --demo` to drive a sample server: every key works, every command is built and previewed for real, and nothing touches your system.",
+  "description": "A terminal UI for the machine's SSH server. It asks sshd what its configuration actually is — `sshd -T`, not what a file says — and shows the settings that decide who gets in first, each with a verdict and the file and line that set it.\n\nFive more screens complete the picture: who is logged in right now and a way to end a session; what the authentication log says over the last day or week; the host keys and their fingerprints; the unit and its sockets; and the local accounts with the keys that log into them, where one is added or removed.\n\nChanges go to a drop-in: tui-ssh never rewrites /etc/ssh/sshd_config. It writes 90-tui-ssh.conf, checks the staged file with `sshd -t -f` before asking anything, and shows the diff and both commands. sshd takes the first value it is given, so the include order is read too: if another file already sets the keyword earlier, the tool says so instead of writing a line that would be ignored. A keyword can also go inside a `Match` block, which the file keeps last: sshd reads what follows one as part of it.\n\nRun `tui-ssh --demo` to drive a sample server: every key works, every command is built and previewed for real, and nothing touches your system.",
   "category": "ssh",
   "homepage": "https://github.com/tui-tools/tui-ssh",
   "repo": "https://github.com/tui-tools/tui-ssh",
@@ -42,8 +42,8 @@
   ],
   "keys": [
     {
-      "key": "tab / 1-5",
-      "action": "Move between config, sessions, auth log, host keys and service"
+      "key": "tab / 1-6",
+      "action": "Move between config, sessions, auth log, host keys, service and users"
     },
     {
       "key": "enter",
@@ -52,6 +52,14 @@
     {
       "key": "e",
       "action": "Change the selected setting, written to a drop-in with a diff to confirm"
+    },
+    {
+      "key": "m",
+      "action": "Change a setting inside a Match block, for some connections only"
+    },
+    {
+      "key": "A",
+      "action": "Add a public key to an account's authorized_keys"
     },
     {
       "key": "t",
@@ -79,7 +87,11 @@
     },
     {
       "key": "R",
-      "action": "Re-read the server"
+      "action": "On users, remove the selected key; on every other screen, re-read"
+    },
+    {
+      "key": "ctrl+r",
+      "action": "Re-read the server, from any screen"
     },
     {
       "key": "?",
@@ -200,7 +212,7 @@
     }
   },
   "security": {
-    "needs_sudo": "Two reads escalate through `sudo -n`, which never prompts: `sshd -T`, and `cat` for an sshd_config that Fedora and Arch ship mode 0600. Both fall back rather than demand a password, and the header says which answer is on screen. Every change escalates too.",
+    "needs_sudo": "Two reads escalate through `sudo -n`, which never prompts: `sshd -T`, and `cat` for a file the plain read cannot open — sshd_config on Fedora and Arch, or another account's authorized_keys. Both fall back rather than demand a password, and the screen says so. Every change escalates too.",
     "preview_before_run": true,
     "no_daemon": true,
     "no_network": true,

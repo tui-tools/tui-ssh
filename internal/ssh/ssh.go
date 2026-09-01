@@ -249,6 +249,65 @@ type HostKey struct {
 	Note    string
 }
 
+// AuthorizedKey is one public key found in a user's authorized_keys file.
+//
+// It is the other half of the question the settings screen answers: sshd may
+// accept public keys, but who actually has one is written in a file per
+// account, and until it is on screen "PubkeyAuthentication yes" says nothing
+// about who can get in.
+type AuthorizedKey struct {
+	// Line is the 1-based line number inside authorized_keys.
+	Line int
+	// Options are the per-key restrictions written before the key type
+	// (`command=…`, `from=…`, `no-pty`), empty when there are none.
+	Options string
+	// Type is the key type as ssh-keygen names it ("ED25519", "RSA").
+	Type string
+	// Bits is the key size, 0 when it could not be derived.
+	Bits int
+	// Fingerprint is the SHA256 fingerprint, in the form ssh-keygen prints.
+	// It is what a key is identified by: a comment is free text and repeats,
+	// and the base64 blob is too long to put in a table.
+	Fingerprint string
+	// Comment is the trailing comment, usually `user@machine`.
+	Comment string
+	// Raw is the line exactly as it is written, which is what a rewrite of the
+	// file copies through unchanged.
+	Raw string
+}
+
+// Label renders the key for a one-line summary.
+func (k AuthorizedKey) Label() string {
+	label := k.Fingerprint
+	if k.Comment != "" {
+		label += " " + k.Comment
+	}
+	if k.Type != "" {
+		label += " (" + k.Type + ")"
+	}
+	return label
+}
+
+// User is a local account that can be logged into over SSH, with the keys that
+// let somebody do it.
+type User struct {
+	// Name is the account name.
+	Name string
+	// Group is the account's primary group, which is what a new file under
+	// its home has to belong to.
+	Group string
+	// Home is the account's home directory.
+	Home string
+	// KeysPath is the authorized_keys file, whether or not it exists.
+	KeysPath string
+	// Keys are the public keys that file carries, in file order.
+	Keys []AuthorizedKey
+	// Unreadable explains why Keys is empty, when the file exists and could
+	// not be read. An account with no file at all leaves it empty: that is not
+	// a failure, it is an account nobody has given a key to.
+	Unreadable string
+}
+
 // Listener is one socket the server is accepting on.
 type Listener struct {
 	Address string
@@ -317,6 +376,9 @@ type Model struct {
 	Sessions []Session
 	Auth     AuthLog
 	HostKeys []HostKey
+	// Users are the local accounts somebody could log into, each with the
+	// public keys that would let them.
+	Users []User
 
 	// Firewall names the firewall that is actually active on this machine
 	// ("ufw"), empty when none was found. It decides whether blocking an
@@ -343,6 +405,26 @@ func (m Model) File(path string) (ConfigFile, bool) {
 		}
 	}
 	return ConfigFile{}, false
+}
+
+// User returns one local account by name.
+func (m Model) User(name string) (User, bool) {
+	for _, u := range m.Users {
+		if u.Name == name {
+			return u, true
+		}
+	}
+	return User{}, false
+}
+
+// UserNames lists the accounts, in the order they were read, which is what the
+// picker offers.
+func (m Model) UserNames() []string {
+	names := make([]string, 0, len(m.Users))
+	for _, u := range m.Users {
+		names = append(names, u.Name)
+	}
+	return names
 }
 
 // Findings are the settings whose verdict is worse than ok, worst first. It is
@@ -393,6 +475,15 @@ type Capabilities struct {
 	SupportsTerminate bool
 	// SupportsRegenerateHostKeys reports whether the host keys can be replaced.
 	SupportsRegenerateHostKeys bool
+	// SupportsAuthorizedKeys reports whether a public key can be added to or
+	// removed from an account.
+	SupportsAuthorizedKeys bool
+	// SupportsMatch reports whether a keyword can be set inside a `Match`
+	// block rather than at file scope.
+	SupportsMatch bool
+	// MatchTypes are the criteria a Match block can select on, in the order
+	// the form offers them ("User", "Group", "Address").
+	MatchTypes []string
 	// EditableKeys are the keywords the guided form offers, in the order it
 	// offers them.
 	EditableKeys []string
@@ -468,6 +559,22 @@ type Backend interface {
 	// BuildSetOption renders the drop-in file that sets a keyword, validates it
 	// with the server's own parser and returns the plan that installs it.
 	BuildSetOption(model Model, key, value string) (WritePlan, error)
+	// BuildSetMatchOption renders the same drop-in with the keyword set inside
+	// a `Match` block instead of at file scope. sshd reads everything after a
+	// Match line as part of that block, so the file the plan installs keeps
+	// every Match block at the end — which is the whole reason this is one
+	// renderer rather than an append.
+	BuildSetMatchOption(model Model, matchType, matchValue, key,
+		value string) (WritePlan, error)
+	// BuildAddAuthorizedKey adds one public key to an account's
+	// authorized_keys. The key is validated with `ssh-keygen -lf` on the
+	// staged file before the plan exists, so the fingerprint the dialog shows
+	// is one ssh-keygen reported rather than one this tool computed.
+	BuildAddAuthorizedKey(model Model, user, publicKey string) (WritePlan, error)
+	// BuildRemoveAuthorizedKey removes the key with this fingerprint from an
+	// account's authorized_keys, by rewriting the file without that one line.
+	BuildRemoveAuthorizedKey(model Model, user,
+		fingerprint string) (WritePlan, error)
 	// BuildReload asks the service to re-read its configuration.
 	BuildReload(model Model) (Command, error)
 	// BuildTerminateSession ends one login.

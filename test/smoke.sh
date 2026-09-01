@@ -211,6 +211,27 @@ check "the sessions were read" "$bin --check" '"sessions": [0-9]+'
 #    booted may have no failures at all, so again the field, not a count.
 check "the auth log was read" "$bin --check" '"failedLogins": [0-9]+'
 
+# 6b. The local accounts were read from /etc/passwd, which is world-readable
+#     everywhere, so this holds for the plain lab user too. The keys on them
+#     are another matter: another account's ~/.ssh is mode 700, so the count
+#     is asserted as a field rather than as a number.
+check "the local accounts were read" "$bin --check" '"accounts": [1-9][0-9]*'
+check "the authorized keys were counted" "$bin --check" '"authorizedKeys": [0-9]+'
+
+# 6c. The read path never writes. `--check` builds no mutation at all, and the
+#     one file this tool would rewrite under a home directory must be exactly
+#     as it was before and after.
+before=$(sha256sum ~/.ssh/authorized_keys 2>/dev/null || echo none)
+$bin --check >/dev/null 2>&1 || true
+after=$(sha256sum ~/.ssh/authorized_keys 2>/dev/null || echo none)
+if [[ $before == "$after" ]]; then
+  printf 'PASS  --check left ~/.ssh/authorized_keys untouched\n'
+  pass=$((pass + 1))
+else
+  printf 'FAIL  --check changed ~/.ssh/authorized_keys\n'
+  fail=$((fail + 1))
+fi
+
 case "$privileged" in
   yes)
     # 7. With `sudo -n`, `sshd -T` answers and the settings are sshd's own.
