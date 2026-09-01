@@ -99,17 +99,25 @@ backup:x:1002:
 `
 )
 
+// The home directories of the sample accounts. They are named here rather than
+// spelled into every path below, so the fixture derives its key file the same
+// way the product does and the two cannot drift apart.
+const (
+	demoDeployHome = "/home/deploy"
+	demoAnaHome    = "/home/ana"
+)
+
 // The sample machine's authorized_keys files. The keys are real ed25519, RSA
 // and ECDSA public keys generated for this fixture, so the fingerprints on
 // screen are fingerprints ssh-keygen would print for them — and the private
 // halves were thrown away, because a demo does not need them and a repository
 // must never carry one.
 var demoAuthorizedKeys = map[string]string{
-	"/home/deploy/.ssh/" + AuthorizedKeysName: "# The keys deploy uses from two machines.\n" +
+	AuthorizedKeysPathFor(demoDeployHome): "# The keys deploy uses from two machines.\n" +
 		"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHVu7l48AcDeT36Odle6Mnflh5BsVHir2huMQEf+qt4Z deploy@laptop\n" +
 		"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEmHjZCBLAiW1n7NUZM9Q76nQkOi/zMPEZEdREVJ8NR0 deploy@phone\n",
-	"/home/ana/.ssh/" + AuthorizedKeysName: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC70Q+c5ix9Nvo9wgzlCVc9Xxvth4LhYz/ZDelU8UFfXMWvcZvF+EXYoaJ74qvngnMbny7j2irScSeCj3nxF2aJ5YdO1J2feEXf+46CJK9Yy4vIvuoAE7uALqlN0LIrbQn6EMCMwk5vssPib2aRMgvr4WIAvtJPVzKt1LnrmAGfWHU8q/1Wj8e98bnuwSez5b4+p+xx9eSP1GnsSkoJuP/kN2BuNGKRVVV/tjg9N49uQ2w6RVW1cyqTcMYwa0WyfrmowWBxy5fqmJHYSYmytjvjDncuNvDTZYOPjqqQrws/YEMVUnhQ2ifIaOL5Dlgec0yvaCO4HmAXxm2sgq0Cs5sgTdnqn4tRE120JtXcclnfZse+ANjjQ/swX8AsZyp/yEvahGQKqpPCeW2O2+ZfEtJIswCNtHYgAw4IOR0sNVh/OxX1TGwUp9ng9UgucUB/SxAZN6vQtRwklPJe395rWyI7gDVqwRsmOgrIbHsOeBFZPkFKGB8b3rmQ5NYl9MYOdAc= ana@workstation\n",
-	"/root/.ssh/" + AuthorizedKeysName:     "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBKv9x7BOXVECTBDT4+5PkTyBqQFxEBU+TCa8iA3Cc/9Qx5JPcdR7D6zuYuoKKzujJevksu1GAVBMTrwXGIgL2+c= ci@runner\n",
+	AuthorizedKeysPathFor(demoAnaHome): "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC70Q+c5ix9Nvo9wgzlCVc9Xxvth4LhYz/ZDelU8UFfXMWvcZvF+EXYoaJ74qvngnMbny7j2irScSeCj3nxF2aJ5YdO1J2feEXf+46CJK9Yy4vIvuoAE7uALqlN0LIrbQn6EMCMwk5vssPib2aRMgvr4WIAvtJPVzKt1LnrmAGfWHU8q/1Wj8e98bnuwSez5b4+p+xx9eSP1GnsSkoJuP/kN2BuNGKRVVV/tjg9N49uQ2w6RVW1cyqTcMYwa0WyfrmowWBxy5fqmJHYSYmytjvjDncuNvDTZYOPjqqQrws/YEMVUnhQ2ifIaOL5Dlgec0yvaCO4HmAXxm2sgq0Cs5sgTdnqn4tRE120JtXcclnfZse+ANjjQ/swX8AsZyp/yEvahGQKqpPCeW2O2+ZfEtJIswCNtHYgAw4IOR0sNVh/OxX1TGwUp9ng9UgucUB/SxAZN6vQtRwklPJe395rWyI7gDVqwRsmOgrIbHsOeBFZPkFKGB8b3rmQ5NYl9MYOdAc= ana@workstation\n",
+	AuthorizedKeysPathFor("/root"):     "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBKv9x7BOXVECTBDT4+5PkTyBqQFxEBU+TCa8iA3Cc/9Qx5JPcdR7D6zuYuoKKzujJevksu1GAVBMTrwXGIgL2+c= ci@runner\n",
 }
 
 // Fake is an in-memory OpenSSH server. It backs --demo and the tests: every key

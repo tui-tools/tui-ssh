@@ -232,10 +232,14 @@ func TestRenderAuthorizedKeysWithout(t *testing.T) {
 	}
 }
 
+// deployHome is the home of the account the command builders are exercised
+// against.
+const deployHome = "/home/deploy"
+
 // demoUser is the account the command builders are exercised against.
 var demoUser = ssh.User{
 	Name: "deploy", Group: "deploy", Home: "/home/deploy",
-	KeysPath: "/home/deploy/.ssh/authorized_keys",
+	KeysPath: AuthorizedKeysPathFor(deployHome),
 }
 
 func TestBuildCreateSSHDir(t *testing.T) {
@@ -243,7 +247,7 @@ func TestBuildCreateSSHDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildCreateSSHDir: %v", err)
 	}
-	want := "install -d -m 700 -o deploy -g deploy /home/deploy/.ssh"
+	want := "install -d -m 700 -o deploy -g deploy " + SSHDirFor(deployHome)
 	if got := cmd.String(); got != want {
 		t.Errorf("argv %q, want %q", got, want)
 	}
@@ -258,7 +262,7 @@ func TestBuildInstallAuthorizedKeys(t *testing.T) {
 		t.Fatalf("BuildInstallAuthorizedKeys: %v", err)
 	}
 	want := "install -m 600 -o deploy -g deploy /tmp/tui-ssh-42/authorized_keys " +
-		"/home/deploy/.ssh/authorized_keys"
+		AuthorizedKeysPathFor(deployHome)
 	if got := cmd.String(); got != want {
 		t.Errorf("argv %q, want %q", got, want)
 	}
@@ -282,7 +286,7 @@ func TestKeyCommandsRefuseAnAccountTheyCannotTrust(t *testing.T) {
 		{Name: "de ploy", Home: "/home/deploy"},
 		{Name: "deploy; reboot", Home: "/home/deploy"},
 		{Name: "deploy", Home: "relative"},
-		{Name: "deploy", Home: "/home/deploy/../../etc"},
+		{Name: "deploy", Home: deployHome + "/../../etc"},
 		{Name: "deploy", Home: "/home/de ploy"},
 		{Name: "deploy", Home: "/"},
 		{Name: "deploy", Home: "/home/deploy", Group: "deploy; reboot"},

@@ -159,6 +159,12 @@ func TestActionsPreviewExactlyWhatTheyRun(t *testing.T) {
 	}
 }
 
+// The homes of the two sample accounts the key flows are exercised against.
+const (
+	deployHome = "/home/deploy"
+	anaHome    = "/home/ana"
+)
+
 // demoKey is a public key that is not on the sample machine yet. It is a real
 // ed25519 key whose private half was thrown away.
 const demoKey = "ssh-ed25519 " +
@@ -265,9 +271,9 @@ func TestAddingAnAuthorizedKeyPreviewsBothCommands(t *testing.T) {
 			len(previews), a.confirm.Command)
 	}
 	want := []string{
-		"sudo -n install -d -m 700 -o ana -g ana /home/ana/.ssh",
+		"sudo -n install -d -m 700 -o ana -g ana " + openssh.SSHDirFor(anaHome),
 		"sudo -n install -m 600 -o ana -g ana /tmp/tui-ssh/authorized_keys " +
-			"/home/ana/.ssh/authorized_keys",
+			openssh.AuthorizedKeysPathFor(anaHome),
 	}
 	for i, preview := range previews {
 		if strings.TrimPrefix(preview, "$ ") != want[i] {
@@ -348,7 +354,7 @@ func TestRemovingAnAuthorizedKeyRewritesTheFile(t *testing.T) {
 	}
 
 	want := "sudo -n install -m 600 -o deploy -g deploy " +
-		"/tmp/tui-ssh/authorized_keys /home/deploy/.ssh/authorized_keys"
+		"/tmp/tui-ssh/authorized_keys " + openssh.AuthorizedKeysPathFor(deployHome)
 	if a.confirm.Command != want {
 		t.Errorf("previewed %q, want %q", a.confirm.Command, want)
 	}

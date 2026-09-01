@@ -20,6 +20,10 @@ ana:x:1001:2000:Ana:/home/ana:/bin/zsh
 broken:x:1002:1002:Broken:relative/home:/bin/bash
 `
 
+// anaHome is the second sample account's home; deployHome is declared with the
+// key fixtures the command builders use.
+const anaHome = "/home/ana"
+
 const sampleGroup = `root:x:0:
 deploy:x:1000:
 developers:x:2000:ana
@@ -84,14 +88,14 @@ func TestParsePasswdIgnoresRubbish(t *testing.T) {
 func TestLoadAuthorizedKeys(t *testing.T) {
 	users := ParsePasswd(samplePasswd, ParseGroups(sampleGroup))
 	files := map[string]string{
-		"/home/deploy/.ssh/authorized_keys": keyFixtures[0].line + "\n" +
+		AuthorizedKeysPathFor(deployHome): keyFixtures[0].line + "\n" +
 			keyFixtures[2].line + "\n",
 	}
 	read := func(path string) (string, error) {
 		if raw, ok := files[path]; ok {
 			return raw, nil
 		}
-		if path == "/home/ana/.ssh/authorized_keys" {
+		if path == AuthorizedKeysPathFor(anaHome) {
 			// Another account's ~/.ssh is mode 700, and this is what an
 			// unprivileged read of it looks like when the escalation is not
 			// available either.
