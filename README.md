@@ -129,7 +129,7 @@ Upgrades then arrive with the rest of your system updates.
 ### Any distribution, static binary
 
 ```sh
-curl -fsSL https://github.com/tui-tools/tui-ssh/releases/download/v0.1.2/tui-ssh_0.1.2_linux_amd64.tar.gz | tar -xz tui-ssh
+curl -fsSL https://github.com/tui-tools/tui-ssh/releases/download/v0.2.0/tui-ssh_0.2.0_linux_amd64.tar.gz | tar -xz tui-ssh
 sudo install -m0755 tui-ssh /usr/local/bin/tui-ssh
 ```
 
