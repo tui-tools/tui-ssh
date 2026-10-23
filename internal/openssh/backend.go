@@ -330,7 +330,8 @@ func (r *Real) loadService(ctx context.Context) ssh.Service {
 	for _, unit := range unitCandidates {
 		out, err := r.systemctl.Read(ctx, "systemctl", "show", unit,
 			"--property=LoadState", "--property=ActiveState",
-			"--property=UnitFileState", "--property=ActiveEnterTimestamp")
+			"--property=UnitFileState", "--property=ActiveEnterTimestamp",
+			"--property=Id")
 		if err != nil {
 			continue
 		}
@@ -346,6 +347,7 @@ func (r *Real) loadService(ctx context.Context) ssh.Service {
 		service.Enabled = service.UnitFileState == "enabled" ||
 			service.UnitFileState == "enabled-runtime" ||
 			service.UnitFileState == "alias"
+		r.loadSocket(ctx, &service, properties["Id"])
 		break
 	}
 
@@ -372,6 +374,19 @@ func (r *Real) loadService(ctx context.Context) ssh.Service {
 		})
 	}
 	return service
+}
+
+// loadSocket looks for the socket unit that goes with the service (ssh.socket
+// for ssh.service, also when the service was found under its sshd.service
+// alias) and records whether it is what starts sshd here.
+func (r *Real) loadSocket(ctx context.Context, service *ssh.Service, id string) {
+	socket := SocketUnitFor(id, service.Unit)
+	out, err := r.systemctl.Read(ctx, "systemctl", "show", socket,
+		"--property=LoadState", "--property=ActiveState", "--property=UnitFileState")
+	if err != nil {
+		return
+	}
+	ApplySocketProperties(service, socket, ParseProperties(out))
 }
 
 // loadSessions reads the live logins: what logind knows about each one, joined
@@ -550,7 +565,7 @@ func (r *Real) BuildSetOption(model ssh.Model, key, value string) (ssh.WritePlan
 	if err != nil {
 		return ssh.WritePlan{}, err
 	}
-	return r.buildDropInPlan(model, before, content, warningFor(model, key, value))
+	return r.buildDropInPlan(model, key, before, content, warningFor(model, key, value))
 }
 
 // BuildSetMatchOption does the same for a keyword inside a `Match` block: the
@@ -568,7 +583,7 @@ func (r *Real) BuildSetMatchOption(model ssh.Model, matchType, matchValue,
 	if err != nil {
 		return ssh.WritePlan{}, err
 	}
-	return r.buildDropInPlan(model, before, content,
+	return r.buildDropInPlan(model, key, before, content,
 		matchWarningFor(model, criteria, key, value))
 }
 
@@ -584,7 +599,7 @@ func currentDropIn(model ssh.Model) string {
 // buildDropInPlan stages a rendered drop-in, has sshd parse it, and returns the
 // plan that installs and applies it. It is shared by the file-scope editor and
 // the Match block editor, so both are gated by the same check.
-func (r *Real) buildDropInPlan(model ssh.Model, before, content,
+func (r *Real) buildDropInPlan(model ssh.Model, key, before, content,
 	warning string) (ssh.WritePlan, error) {
 	if before == content {
 		return ssh.WritePlan{}, fmt.Errorf("%s already says exactly this", DropInPath)
@@ -625,11 +640,11 @@ func (r *Real) buildDropInPlan(model ssh.Model, before, content,
 	if err != nil {
 		return ssh.WritePlan{}, err
 	}
-	reloadCmd, err := BuildReload(model.Service.Unit)
+	apply, err := BuildApplyDropIn(model.Service, key)
 	if err != nil {
 		return ssh.WritePlan{}, err
 	}
-	plan.Commands = []ssh.Command{installCmd, reloadCmd}
+	plan.Commands = append([]ssh.Command{installCmd}, apply...)
 	return plan, nil
 }
 
@@ -664,6 +679,12 @@ func warningFor(model ssh.Model, key, value string) string {
 				"to allow the new one before the reload, or the next login will "+
 				"not get through — tui-firewall is the tool for that. Keep this "+
 				"session open until you have tested a new one.")
+		if model.Service.SocketActivated {
+			warnings = append(warnings, fmt.Sprintf(
+				"%s listens for sshd on this machine, so the change is applied "+
+					"by regenerating and restarting %s rather than by a reload.",
+				model.Service.Socket, model.Service.Socket))
+		}
 	case "AllowUsers", "AllowGroups":
 		warnings = append(warnings,
 			"Setting this denies everyone not listed. Make sure your own "+
@@ -937,7 +958,7 @@ func stageFile(destination, content string) (string, error) {
 
 // BuildReload asks the service to re-read its configuration.
 func (r *Real) BuildReload(model ssh.Model) (ssh.Command, error) {
-	return BuildReload(model.Service.Unit)
+	return BuildServiceReload(model.Service)
 }
 
 // BuildTerminateSession ends one login.
@@ -948,7 +969,7 @@ func (r *Real) BuildTerminateSession(session ssh.Session) (ssh.Command, error) {
 // BuildRegenerateHostKeys moves the current host keys aside and generates a
 // fresh set.
 func (r *Real) BuildRegenerateHostKeys(model ssh.Model) ([]ssh.Command, error) {
-	return BuildRegenerateHostKeys(model.HostKeys, model.Service.Unit,
+	return BuildRegenerateHostKeys(model.HostKeys, model.Service,
 		r.now().UTC().Format("20060102-150405"))
 }
 

@@ -349,6 +349,18 @@ type Service struct {
 	UnitFileState string
 	// Since is when the unit entered its current state.
 	Since string
+	// Socket is the socket unit that starts the service on demand
+	// ("ssh.socket"), empty when there is none on this machine.
+	// SocketActiveState and SocketUnitFileState are systemd's words for it.
+	Socket              string
+	SocketActiveState   string
+	SocketUnitFileState string
+	// SocketActivated reports that the socket unit, not the service, is what
+	// listens and starts at boot: Ubuntu's default since 22.10, where
+	// ssh.service is disabled and ssh.socket enabled. The service then runs
+	// only once a connection has started it, so it can be inactive on a
+	// healthy machine, and its "disabled" does not mean sshd will not start.
+	SocketActivated bool
 	// Listeners are the sockets it is accepting on.
 	Listeners []Listener
 	// Guards are the brute-force blockers found on the machine.
@@ -493,6 +505,26 @@ type Capabilities struct {
 	// Help is the one sentence the editor shows under a keyword, so the UI
 	// explains what a setting does without knowing anything about sshd.
 	Help map[string]string
+	// Aliases maps, per keyword, a value the server may report to the choice
+	// it means: sshd -T prints PermitRootLogin's deprecated spelling
+	// "without-password" on some releases, which is "prohibit-password".
+	Aliases map[string]map[string]string
+}
+
+// CanonicalChoice returns the choice a reported value stands for: the value
+// itself, matched without regard to case, or the choice its alias names. It
+// returns the value unchanged when it is none of the keyword's choices.
+func (c Capabilities) CanonicalChoice(key, value string) string {
+	value = strings.TrimSpace(value)
+	if canonical, ok := c.Aliases[key][strings.ToLower(value)]; ok {
+		return canonical
+	}
+	for _, choice := range c.Choices[key] {
+		if strings.EqualFold(choice, value) {
+			return choice
+		}
+	}
+	return value
 }
 
 // ChoicesFor returns the accepted values of a keyword, and whether it has a

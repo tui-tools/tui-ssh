@@ -235,7 +235,7 @@ Before you are asked anything, the new file is staged in a private temporary
 directory and handed to the server's own parser — `sshd -t -f` — so a value
 sshd would refuse is a message on the form rather than a service that fails to
 reload after the file is already in `/etc`. The dialog then shows the check, the
-unified diff, and the two commands that apply it. `y` runs them, `n` does not.
+unified diff, and the commands that apply it. `y` runs them, `n` does not.
 
 ### The Include-order caveat, read rather than assumed
 
@@ -317,6 +317,14 @@ The last 24 hours or 7 days from `journalctl -u sshd -u ssh`, falling back to
 `/var/log/auth.log` on a machine with rsyslog and no journal. Accepted, failed
 and invalid-user counts; the addresses doing the most of it and the accounts
 they are trying; and the raw line behind any row, on `enter`.
+
+A failed attempt counts once, whatever it leaves in the log. With
+`PasswordAuthentication no` there is no `Failed password` line at all: a
+refused client leaves only `Connection closed by authenticating user ana
+198.51.100.20 port 55228 [preauth]` (or `Disconnected from` / `Connection reset
+by` the same), and that line is counted as a failure. When it closes a
+connection that already logged a `Failed password` or `maximum authentication
+attempts exceeded`, it is the same attempt and is not counted again.
 
 `b` blocks the selected address — but only when `ufw` is the firewall that is
 actually running. On a machine whose rules are `nftables` or `firewalld` a
@@ -547,7 +555,15 @@ block's criteria.
   when `ufw` is what is running.
 - Fingerprint the host keys and replace the whole set, old keys moved aside.
 - Report the unit, its listening sockets and whether `fail2ban` or `sshguard`
-  is installed.
+  is installed. On a socket-activated machine (Ubuntu since 22.10, where
+  `ssh.socket` is enabled and `ssh.service` is disabled by design) the service
+  screen says so (`socket-activated: ssh.socket enabled, active`), an idle
+  service whose socket is listening is not shown as stopped, and `--check`
+  adds `socket` and `socketActivated`. A change there is applied with
+  `systemctl try-reload-or-restart ssh`, which reloads a running sshd and
+  leaves an idle one to read the new file when the socket starts it, and a
+  `Port` or `ListenAddress` change with `systemctl daemon-reload` and
+  `systemctl restart ssh.socket`, since the socket is what listens.
 - Follow the active Omarchy theme, and respect `NO_COLOR`.
 
 ## What v0.1 cannot do

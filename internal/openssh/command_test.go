@@ -102,7 +102,7 @@ func TestBuildRegenerateHostKeys(t *testing.T) {
 		{Path: "/etc/ssh/ssh_host_ed25519_key.pub"},
 		{Path: "/etc/ssh/ssh_host_rsa_key.pub"},
 	}
-	commands, err := BuildRegenerateHostKeys(keys, "sshd", "20260829-114500")
+	commands, err := BuildRegenerateHostKeys(keys, ssh.Service{Unit: "sshd"}, "20260829-114500")
 	if err != nil {
 		t.Fatalf("BuildRegenerateHostKeys: %v", err)
 	}
@@ -137,14 +137,14 @@ func TestBuildRegenerateHostKeys(t *testing.T) {
 	for _, bad := range []string{"/etc/passwd", "/etc/ssh/../passwd",
 		"/etc/ssh/ssh_host_rsa_key.pub.bak"} {
 		if _, err := BuildRegenerateHostKeys([]ssh.HostKey{{Path: bad}},
-			"sshd", "20260829-114500"); err == nil {
+			ssh.Service{Unit: "sshd"}, "20260829-114500"); err == nil {
 			t.Errorf("BuildRegenerateHostKeys accepted %q", bad)
 		}
 	}
-	if _, err := BuildRegenerateHostKeys(keys, "sshd", "yesterday"); err == nil {
+	if _, err := BuildRegenerateHostKeys(keys, ssh.Service{Unit: "sshd"}, "yesterday"); err == nil {
 		t.Errorf("BuildRegenerateHostKeys accepted a free-text timestamp")
 	}
-	if _, err := BuildRegenerateHostKeys(nil, "sshd", "20260829-114500"); err == nil {
+	if _, err := BuildRegenerateHostKeys(nil, ssh.Service{Unit: "sshd"}, "20260829-114500"); err == nil {
 		t.Errorf("a machine with no host keys has nothing to regenerate")
 	}
 }

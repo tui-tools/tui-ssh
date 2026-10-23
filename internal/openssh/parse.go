@@ -743,6 +743,25 @@ const (
 	markerMaxAuth     = "maximum authentication attempts exceeded"
 )
 
+// refusalMarkers are the lines sshd writes when a connection for an existing
+// account ends before it authenticated. With PasswordAuthentication no there
+// is no "Failed password" line at all: a client that offers a password, or a
+// key the account does not have, is simply refused, and this closing line is
+// the only trace of the attempt. OpenSSH 9.6 writes "Connection closed by
+// authenticating user ana 198.51.100.20 port 55228 [preauth]"; a client that
+// sends a disconnect first gets "Disconnected from authenticating user ...",
+// and a reset one "Connection reset by authenticating user ...".
+//
+// The same line also closes a connection that did fail with a counted line
+// before it ("Failed password", "maximum authentication attempts exceeded"),
+// so ParseAuthLog counts it only for a connection nothing else was counted
+// for: one attempt, one count.
+var refusalMarkers = []string{
+	"Connection closed by authenticating user ",
+	"Disconnected from authenticating user ",
+	"Connection reset by authenticating user ",
+}
+
 // ParseAuthLog classifies the server's authentication lines and counts them.
 //
 // window and source are carried through rather than derived, because a reader
@@ -752,15 +771,28 @@ func ParseAuthLog(out, window, source string) ssh.AuthLog {
 	log := ssh.AuthLog{Window: window, Source: source}
 	failuresByIP := map[string]int{}
 	failuresByUser := map[string]int{}
+	// counted holds the connections (address and port) an event was already
+	// counted for, so the line that closes one is not a second attempt.
+	counted := map[string]bool{}
 
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimRight(line, "\r")
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		event := classify(line)
+		event, refusal := classifyRefusal(line)
+		if !refusal {
+			event = classify(line)
+		}
 		if event.Kind == ssh.AuthOther {
 			continue
+		}
+		connection := connectionOf(event.IP, line)
+		if refusal && connection != "" && counted[connection] {
+			continue
+		}
+		if connection != "" {
+			counted[connection] = true
 		}
 		switch event.Kind {
 		case ssh.AuthAccepted:
@@ -820,6 +852,54 @@ func classify(line string) ssh.AuthEvent {
 	event.User = userFrom(line)
 	event.IP = addressFrom(line)
 	return event
+}
+
+// classifyRefusal recognises the line that closes a refused connection for an
+// existing account (see refusalMarkers) and reads the account and the address
+// out of it: "... authenticating user ana 198.51.100.20 port 55228 [preauth]".
+func classifyRefusal(line string) (ssh.AuthEvent, bool) {
+	for _, marker := range refusalMarkers {
+		_, rest, found := strings.Cut(line, marker)
+		if !found {
+			continue
+		}
+		// The address is the last word before " port ", and the account is
+		// everything between the marker and the address.
+		head, _, found := strings.Cut(rest, " port ")
+		if !found {
+			return ssh.AuthEvent{}, false
+		}
+		fields := strings.Fields(head)
+		if len(fields) < 2 {
+			return ssh.AuthEvent{}, false
+		}
+		return ssh.AuthEvent{
+			Kind: ssh.AuthFailed,
+			User: strings.Join(fields[:len(fields)-1], " "),
+			IP:   fields[len(fields)-1],
+			Raw:  line,
+		}, true
+	}
+	return ssh.AuthEvent{}, false
+}
+
+// connectionOf identifies the connection a line belongs to by its source
+// address and port, which sshd writes on every authentication line ("from
+// 198.51.100.20 port 55228", "198.51.100.20 port 55228"). It is empty when the
+// line names no port.
+func connectionOf(ip, line string) string {
+	if ip == "" {
+		return ""
+	}
+	_, rest, found := strings.Cut(line, " port ")
+	if !found {
+		return ""
+	}
+	port := strings.TrimRight(firstField(rest), ":")
+	if port == "" {
+		return ""
+	}
+	return ip + " " + port
 }
 
 // wordAfter returns the token following a marker.
@@ -888,4 +968,38 @@ func topCounts(counts map[string]int) []ssh.Count {
 		out = out[:topOffenders]
 	}
 	return out
+}
+
+// SocketUnitFor names the socket unit that belongs to the SSH service: the
+// service's own id with .socket in place of .service ("ssh.service" gives
+// "ssh.socket", also when the service was found as its sshd.service alias),
+// or the unit name itself when systemd reported no id.
+func SocketUnitFor(id, unit string) string {
+	base := strings.TrimSuffix(strings.TrimSpace(id), ".service")
+	if base == "" {
+		base = unit
+	}
+	return base + ".socket"
+}
+
+// ApplySocketProperties records what `systemctl show <socket>` said about the
+// socket unit. A socket that is enabled, or is listening, is what starts sshd
+// on this machine: Ubuntu 22.10 and later ship ssh.socket enabled and
+// ssh.service disabled. One that exists but is neither (Fedora's sshd.socket
+// out of the box) leaves the service as the thing that runs sshd, and the
+// service is reported exactly as before.
+func ApplySocketProperties(service *ssh.Service, socket string, properties map[string]string) {
+	if properties["LoadState"] != "loaded" {
+		return
+	}
+	unitFileState := properties["UnitFileState"]
+	activeState := properties["ActiveState"]
+	enabled := unitFileState == "enabled" || unitFileState == "enabled-runtime"
+	if !enabled && activeState != "active" {
+		return
+	}
+	service.Socket = socket
+	service.SocketActiveState = activeState
+	service.SocketUnitFileState = unitFileState
+	service.SocketActivated = true
 }

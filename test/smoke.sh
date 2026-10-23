@@ -174,6 +174,17 @@ if [[ $unit != none ]]; then
   if [[ $active == active ]]; then
     check "the service is reported as running" "$bin --check" '"active": true'
   fi
+
+  # Ubuntu 22.10 and later start sshd from ssh.socket: the service is disabled
+  # by design and the socket is what is enabled. The tool has to say so.
+  socket_state=$(systemctl is-enabled "$unit.socket" 2>/dev/null)
+  if [[ $socket_state == enabled ]]; then
+    check "socket activation through $unit.socket is reported" \
+      "$bin --check" '"socketActivated": true'
+  else
+    check "no socket activation is reported" \
+      "$bin --check" '"socketActivated": false'
+  fi
 fi
 
 # 3. The security-relevant settings came back with a verdict each — when the

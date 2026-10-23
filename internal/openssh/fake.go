@@ -547,7 +547,7 @@ func (f *Fake) dropInPlan(model ssh.Model, before, content,
 	if err != nil {
 		return ssh.WritePlan{}, err
 	}
-	reloadCmd, err := BuildReload(model.Service.Unit)
+	reloadCmd, err := BuildServiceReload(model.Service)
 	if err != nil {
 		return ssh.WritePlan{}, err
 	}
@@ -677,7 +677,7 @@ func (f *Fake) stageKeyFile(user ssh.User, before,
 
 // BuildReload asks the service to re-read its configuration.
 func (f *Fake) BuildReload(model ssh.Model) (ssh.Command, error) {
-	return BuildReload(model.Service.Unit)
+	return BuildServiceReload(model.Service)
 }
 
 // BuildTerminateSession ends one login.
@@ -687,7 +687,7 @@ func (f *Fake) BuildTerminateSession(session ssh.Session) (ssh.Command, error) {
 
 // BuildRegenerateHostKeys replaces the sample machine's host keys.
 func (f *Fake) BuildRegenerateHostKeys(model ssh.Model) ([]ssh.Command, error) {
-	return BuildRegenerateHostKeys(model.HostKeys, model.Service.Unit, demoStamp)
+	return BuildRegenerateHostKeys(model.HostKeys, model.Service, demoStamp)
 }
 
 // BuildDenyIP blocks an address at the sample machine's firewall.
