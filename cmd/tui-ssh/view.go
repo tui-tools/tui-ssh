@@ -130,9 +130,18 @@ func (a *app) noSettingsMessage() string {
 func (a *app) headerView() string {
 	t := a.theme
 
-	unitValue, unitStyle := a.model.Service.Unit+" running", t.OK
-	if !a.model.Service.Active {
-		unitValue = a.model.Service.Unit + " " + orNone(a.model.Service.ActiveState)
+	service := a.model.Service
+	unitValue, unitStyle := service.Unit+" running", t.OK
+	switch {
+	case service.Active && service.SocketActivated:
+		unitValue = service.Unit + " running, via " + service.Socket
+	case service.SocketActivated && service.SocketActiveState == "active":
+		// Socket activation: nothing has connected yet, and the socket is
+		// listening and will start sshd when something does. That is a
+		// healthy server, not a stopped one.
+		unitValue = service.Unit + " idle, " + service.Socket + " listening"
+	case !service.Active:
+		unitValue = service.Unit + " " + orNone(service.ActiveState)
 		unitStyle = t.Danger
 	}
 	facts := []ui.Fact{{Label: "service", Value: unitValue, Style: &unitStyle}}
@@ -427,6 +436,15 @@ func (a *app) serviceRows() []serviceRow {
 		{"active", orNone(service.ActiveState)},
 		{"enabled", orNone(service.UnitFileState)},
 		{"since", orNone(service.Since)},
+	}
+	// On a socket-activated machine (Ubuntu since 22.10) the service being
+	// "disabled" is by design: the socket is the unit that is enabled, listens,
+	// and starts sshd on the first connection.
+	if service.SocketActivated {
+		rows[2].value += " (" + service.Socket + " starts it)"
+		rows = append(rows, serviceRow{"socket", "socket-activated: " + service.Socket +
+			" " + orNone(service.SocketUnitFileState) + ", " +
+			orNone(service.SocketActiveState)})
 	}
 	for _, listener := range service.Listeners {
 		value := listener.String()

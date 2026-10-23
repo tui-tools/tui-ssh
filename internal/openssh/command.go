@@ -166,6 +166,15 @@ var capabilities = ssh.Capabilities{
 	EditableKeys:               editableOrder,
 	Choices:                    choiceMap(),
 	Help:                       helpMap(),
+	Aliases:                    choiceAliases,
+}
+
+// choiceAliases are the older spellings sshd still accepts and, depending on
+// the release, still prints in `sshd -T`. OpenSSH 7.0 renamed PermitRootLogin's
+// without-password to prohibit-password; 9.6 on Ubuntu 24.04 still reports
+// the old name for the default.
+var choiceAliases = map[string]map[string]string{
+	"PermitRootLogin": {"without-password": "prohibit-password"},
 }
 
 // choiceMap exposes the closed value sets to the UI, which builds the form's
@@ -517,6 +526,68 @@ func BuildReload(unit string) (ssh.Command, error) {
 	}, nil
 }
 
+// BuildServiceReload is BuildReload for the service as this machine runs it.
+// Where a socket unit starts sshd on demand (Ubuntu's ssh.socket), the
+// service may not be running at all — nothing has connected since boot, or
+// since the socket was restarted — and `systemctl reload` then fails with
+// "ssh.service is not active, cannot reload" after the new file is already in
+// place. `try-reload-or-restart` reloads a running sshd the same way (sshd
+// has a reload action, so it is never restarted) and does nothing to a
+// stopped one, which reads the new configuration when the socket starts it.
+// A host without socket activation gets plain BuildReload, unchanged.
+func BuildServiceReload(service ssh.Service) (ssh.Command, error) {
+	if !service.SocketActivated {
+		return BuildReload(service.Unit)
+	}
+	if !unitRe.MatchString(service.Unit) || !unitRe.MatchString(service.Socket) {
+		return ssh.Command{}, fmt.Errorf("openssh: %q / %q is not a unit name",
+			service.Unit, service.Socket)
+	}
+	return ssh.Command{
+		Argv: []string{"systemctl", "try-reload-or-restart", service.Unit},
+		Description: "Reload " + service.Unit + " if it is running; " + service.Socket +
+			" starts it with the new configuration otherwise",
+	}, nil
+}
+
+// listenKeys are the keywords that decide where sshd listens. Under socket
+// activation sshd does not bind anything itself: Ubuntu's sshd-socket-generator
+// turns them into the ListenStream lines of ssh.socket when systemd reloads
+// its units, and the socket has to be restarted to listen there.
+var listenKeys = map[string]bool{"Port": true, "ListenAddress": true}
+
+// BuildApplyDropIn is what makes the server pick up a drop-in that has just
+// been installed: a reload, except for a keyword that moves the listening
+// socket on a socket-activated machine, where it is `systemctl daemon-reload`
+// (so the generator rewrites the socket) and a restart of the socket unit
+// (which restarts the service with it; the sessions already open are separate
+// processes and survive it).
+func BuildApplyDropIn(service ssh.Service, key string) ([]ssh.Command, error) {
+	if service.SocketActivated && listenKeys[canonicalKey(key)] {
+		if !unitRe.MatchString(service.Socket) {
+			return nil, fmt.Errorf("openssh: %q is not a unit name", service.Socket)
+		}
+		return []ssh.Command{
+			{
+				Argv: []string{"systemctl", "daemon-reload"},
+				Description: "Have systemd regenerate " + service.Socket +
+					" from the new listening address",
+			},
+			{
+				Argv: []string{"systemctl", "restart", service.Socket},
+				Description: "Restart " + service.Socket + " so it listens there " +
+					"(this restarts " + service.Unit + " too)",
+				Destructive: true,
+			},
+		}, nil
+	}
+	reload, err := BuildServiceReload(service)
+	if err != nil {
+		return nil, err
+	}
+	return []ssh.Command{reload}, nil
+}
+
 // stagedRe accepts the staging path the install command copies from. It is a
 // path this package built, and it is checked anyway.
 var stagedRe = regexp.MustCompile(`^/[A-Za-z0-9._/-]+$`)
@@ -594,7 +665,8 @@ func BackupDirFor(stamp string) string {
 // `mv` the user can read. Every client that has connected before will still
 // refuse the new keys until its known_hosts entry is removed, which is what the
 // confirm dialog says in as many words.
-func BuildRegenerateHostKeys(keys []ssh.HostKey, unit, stamp string) ([]ssh.Command, error) {
+func BuildRegenerateHostKeys(keys []ssh.HostKey, service ssh.Service,
+	stamp string) ([]ssh.Command, error) {
 	if !stampRe.MatchString(stamp) {
 		return nil, fmt.Errorf("openssh: %q is not a backup timestamp", stamp)
 	}
@@ -613,7 +685,7 @@ func BuildRegenerateHostKeys(keys []ssh.HostKey, unit, stamp string) ([]ssh.Comm
 	sort.Strings(paths)
 
 	backup := BackupDirFor(stamp)
-	reload, err := BuildReload(unit)
+	reload, err := BuildServiceReload(service)
 	if err != nil {
 		return nil, err
 	}

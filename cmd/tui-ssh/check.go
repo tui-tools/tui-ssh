@@ -84,6 +84,11 @@ type checkReport struct {
 	Unit    string `json:"unit"`
 	Active  bool   `json:"active"`
 	Enabled bool   `json:"enabled"`
+	// Socket and SocketActivated say whether a socket unit (Ubuntu's
+	// ssh.socket) is what listens and starts the service. Enabled stays the
+	// service's own state, which is "disabled" on such a machine by design.
+	Socket          string `json:"socket,omitempty"`
+	SocketActivated bool   `json:"socketActivated"`
 
 	// Compat is what the backend version probe found. It is reported rather
 	// than asserted: an untested version is a fact about the machine, not a
@@ -127,6 +132,8 @@ func runCheck(backend ssh.Backend, backendCompat compat.Result,
 		Unit:            model.Service.Unit,
 		Active:          model.Service.Active,
 		Enabled:         model.Service.Enabled,
+		Socket:          model.Service.Socket,
+		SocketActivated: model.Service.SocketActivated,
 		Compat:          backendCompat,
 		Model:           model,
 		Accounts:        len(model.Users),

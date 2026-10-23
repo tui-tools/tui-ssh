@@ -125,8 +125,12 @@ func (f *settingForm) reseed(model ssh.Model, caps ssh.Capabilities) {
 	options, closed := caps.ChoicesFor(key)
 	f.valueOptions, f.valueChoice = options, 0
 	if closed {
+		// The server may report a choice under an older spelling
+		// (without-password for prohibit-password); the picker starts on
+		// the choice it means, never on the first one by default.
+		current := caps.CanonicalChoice(key, f.current)
 		for i, option := range options {
-			if option == f.current {
+			if option == current {
 				f.valueChoice = i
 			}
 		}

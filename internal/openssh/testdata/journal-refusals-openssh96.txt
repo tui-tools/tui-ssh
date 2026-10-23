@@ -1,0 +1,37 @@
+2026-10-23T18:34:14+00:00 server sshd[487]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=198.51.100.20  user=ana
+2026-10-23T18:34:16+00:00 server sshd[487]: Failed password for ana from 198.51.100.20 port 55600 ssh2
+2026-10-23T18:34:17+00:00 server sshd[487]: Connection closed by authenticating user ana 198.51.100.20 port 55600 [preauth]
+2026-10-23T18:34:18+00:00 server systemd[1]: Reloading ssh.service - OpenBSD Secure Shell server...
+2026-10-23T18:34:18+00:00 server sshd[256]: Received SIGHUP; restarting.
+2026-10-23T18:34:18+00:00 server sshd[256]: Server listening on 0.0.0.0 port 22.
+2026-10-23T18:34:18+00:00 server sshd[256]: Server listening on :: port 22.
+2026-10-23T18:34:18+00:00 server systemd[1]: Reloaded ssh.service - OpenBSD Secure Shell server.
+2026-10-23T18:34:19+00:00 server sshd[500]: Connection closed by authenticating user ana 198.51.100.20 port 55228 [preauth]
+2026-10-23T18:34:20+00:00 server sshd[502]: Connection closed by authenticating user ana 198.51.100.20 port 55240 [preauth]
+2026-10-23T18:34:21+00:00 server sshd[504]: Invalid user bob from 198.51.100.20 port 55246
+2026-10-23T18:34:21+00:00 server sshd[504]: Connection closed by invalid user bob 198.51.100.20 port 55246 [preauth]
+2026-10-23T18:34:22+00:00 server sshd[506]: Connection closed by authenticating user deploy 198.51.100.20 port 55260 [preauth]
+2026-10-23T18:34:23+00:00 server sshd[508]: Accepted publickey for ana from 198.51.100.20 port 55262 ssh2: ED25519 SHA256:Dph8zhzEOV6SWWJDYmBjVirDQgvTTxrWQCmjVd3zApg
+2026-10-23T18:34:23+00:00 server sshd[508]: pam_unix(sshd:session): session opened for user ana(uid=1001) by ana(uid=0)
+2026-10-23T18:34:24+00:00 server sshd[508]: pam_unix(sshd:session): session closed for user ana
+2026-10-23T18:34:25+00:00 server sshd[531]: Accepted publickey for ana from 198.51.100.20 port 58030 ssh2: ED25519 SHA256:Dph8zhzEOV6SWWJDYmBjVirDQgvTTxrWQCmjVd3zApg
+2026-10-23T18:34:25+00:00 server sshd[531]: pam_unix(sshd:session): session opened for user ana(uid=1001) by ana(uid=0)
+2026-10-23T18:34:25+00:00 server sshd[531]: pam_unix(sshd:session): session closed for user ana
+2026-10-23T18:34:42+00:00 server systemd[1]: Reloading ssh.service - OpenBSD Secure Shell server...
+2026-10-23T18:34:42+00:00 server sshd[256]: Received SIGHUP; restarting.
+2026-10-23T18:34:42+00:00 server sshd[256]: Server listening on 0.0.0.0 port 22.
+2026-10-23T18:34:42+00:00 server sshd[256]: Server listening on :: port 22.
+2026-10-23T18:34:42+00:00 server systemd[1]: Reloaded ssh.service - OpenBSD Secure Shell server.
+2026-10-23T18:34:43+00:00 server sshd[574]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=198.51.100.20  user=ana
+2026-10-23T18:34:45+00:00 server sshd[574]: Failed password for ana from 198.51.100.20 port 51054 ssh2
+2026-10-23T18:34:46+00:00 server sshd[574]: Connection closed by authenticating user ana 198.51.100.20 port 51054 [preauth]
+2026-10-23T18:34:47+00:00 server sshd[576]: Connection closed by authenticating user ana 198.51.100.20 port 53652 [preauth]
+2026-10-23T18:34:48+00:00 server systemd[1]: Reloading ssh.service - OpenBSD Secure Shell server...
+2026-10-23T18:34:48+00:00 server sshd[256]: Received SIGHUP; restarting.
+2026-10-23T18:34:48+00:00 server sshd[256]: Server listening on 0.0.0.0 port 22.
+2026-10-23T18:34:48+00:00 server sshd[256]: Server listening on :: port 22.
+2026-10-23T18:34:48+00:00 server systemd[1]: Reloaded ssh.service - OpenBSD Secure Shell server.
+2026-10-23T18:35:09+00:00 server sshd[599]: error: maximum authentication attempts exceeded for ana from 198.51.100.20 port 36394 ssh2 [preauth]
+2026-10-23T18:35:09+00:00 server sshd[599]: Disconnecting authenticating user ana 198.51.100.20 port 36394: Too many authentication failures [preauth]
+2026-10-23T18:35:10+00:00 server sshd[601]: Connection closed by authenticating user ana 198.51.100.20 port 36396 [preauth]
+2026-10-23T18:35:10+00:00 server sshd[603]: Connection closed by authenticating user root 198.51.100.20 port 36408 [preauth]
