@@ -873,3 +873,107 @@ func TestEditorRefusesAValueSshdWouldNot(t *testing.T) {
 		t.Errorf("a command ran anyway")
 	}
 }
+
+// newIdleTestApp is newTestApp on a socket-activated server that has not
+// started since boot: /run/sshd is missing and sshd will not check a file.
+func newIdleTestApp(t *testing.T) (*app, *openssh.Fake) {
+	t.Helper()
+	backend := openssh.NewIdleFake()
+	a := newApp(backend, theme.New(), compat.Result{})
+	a.width, a.height = 100, 30
+	drain(t, a, a.Init())
+	return a, backend
+}
+
+// openPasswordEdit opens the editor on PasswordAuthentication and submits "no".
+func openPasswordEdit(t *testing.T, a *app) {
+	t.Helper()
+	selectSetting(t, a, "PasswordAuthentication")
+	drain(t, a, press(a, "e"))
+	if a.mode != modeForm {
+		t.Fatalf("e did not open the editor (status: %s)", a.status)
+	}
+	drain(t, a, press(a, "tab"))
+	a.form.set(fieldValue, "no", a.model, a.caps)
+	drain(t, a, press(a, "enter"))
+}
+
+// TestIdleServerOffersThePrivsepDirThenRetriesTheEdit is issue #27: on an idle
+// socket-activated server the edit is not refused as a bad value. The one step
+// that makes the check runnable is previewed and confirmed, and then the same
+// edit is checked and shown with its own dialog.
+func TestIdleServerOffersThePrivsepDirThenRetriesTheEdit(t *testing.T) {
+	a, backend := newIdleTestApp(t)
+	if header := a.headerView(); !strings.Contains(header, "sshd idle") {
+		t.Errorf("the header does not explain the idle state:\n%s", header)
+	}
+	openPasswordEdit(t, a)
+
+	if a.mode != modeConfirm {
+		t.Fatalf("no confirm dialog (status: %s)", a.status)
+	}
+	if a.confirm.Command != "sudo -n install -d -m 0755 -o root -g root /run/sshd" {
+		t.Errorf("previewed %q", a.confirm.Command)
+	}
+	if strings.Contains(a.confirm.Body, "refused") ||
+		!strings.Contains(a.confirm.Body, "idle under socket activation") {
+		t.Errorf("dialog body:\n%s", a.confirm.Body)
+	}
+	if len(backend.Ran()) != 0 {
+		t.Fatalf("something ran before the confirmation: %v", backend.Ran())
+	}
+
+	drain(t, a, press(a, "y"))
+	ran := backend.Ran()
+	if len(ran) != 1 || ran[0].Argv[0] != "install" || ran[0].Argv[1] != "-d" {
+		t.Fatalf("ran %v, want only the directory", ran)
+	}
+	// The retry opened the edit's own dialog, checked this time.
+	if a.mode != modeConfirm || !strings.Contains(a.confirm.Body, "+PasswordAuthentication no") ||
+		!strings.Contains(a.confirm.Body, "✓ accepted by") {
+		t.Fatalf("mode %v, dialog body:\n%s", a.mode, a.confirm.Body)
+	}
+	if !a.model.Effective || a.model.PrivsepMissing {
+		t.Errorf("the screen was not re-read after the directory appeared")
+	}
+
+	drain(t, a, press(a, "y"))
+	ran = backend.Ran()
+	if len(ran) != 3 || ran[1].Argv[0] != "install" ||
+		ran[2].String() != "systemctl try-reload-or-restart ssh" {
+		t.Errorf("ran %v", ran)
+	}
+}
+
+// TestCancellingThePrivsepStepReturnsToTheForm: saying no to the directory
+// runs nothing and leaves the edit open, unchanged.
+func TestCancellingThePrivsepStepReturnsToTheForm(t *testing.T) {
+	a, backend := newIdleTestApp(t)
+	openPasswordEdit(t, a)
+	if a.mode != modeConfirm {
+		t.Fatalf("no confirm dialog (status: %s)", a.status)
+	}
+	drain(t, a, press(a, "n"))
+	if a.mode != modeForm || a.form.value() != "no" {
+		t.Errorf("mode %v, form value %q; want the form back as it was", a.mode, a.form.value())
+	}
+	if len(backend.Ran()) != 0 {
+		t.Errorf("ran %v", backend.Ran())
+	}
+}
+
+// TestIdleServerRendersAtEveryWidth: the idle header, the explanation on the
+// service screen and the directory dialog fit every terminal width.
+func TestIdleServerRendersAtEveryWidth(t *testing.T) {
+	for width := 40; width <= 200; width += 4 {
+		a, _ := newIdleTestApp(t)
+		a.width, a.height = width, 24
+		a.clampCursor()
+		for s := screen(0); s < screenCount; s++ {
+			a.screen = s
+			checkWidth(t, a, "idle "+s.title(), width)
+		}
+		openPasswordEdit(t, a)
+		checkWidth(t, a, "idle privsep dialog", width)
+	}
+}

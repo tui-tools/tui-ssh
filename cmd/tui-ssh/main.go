@@ -42,7 +42,10 @@ func defaults() map[string]string {
 
 // options holds the parsed command line.
 type options struct {
-	demo        bool
+	demo bool
+	// demoIdle is --demo on a socket-activated server that has not started
+	// since boot, the state where sshd cannot check a file yet.
+	demoIdle    bool
 	check       bool
 	report      bool
 	themePath   string
@@ -60,6 +63,8 @@ func parseFlags(args []string, out *os.File) (options, error) {
 	fs.SetOutput(out)
 	fs.BoolVar(&opts.demo, "demo", false,
 		"run against a sample server, without touching the real one")
+	fs.BoolVar(&opts.demoIdle, "demo-idle", false,
+		"like --demo, on a socket-activated server that nothing has connected to since boot")
 	fs.BoolVar(&opts.check, "check", false,
 		"read the server and print the parsed state as JSON, then exit "+
 			"(no UI, no changes); exit 1 if the backend cannot be read")
@@ -79,6 +84,9 @@ func parseFlags(args []string, out *os.File) (options, error) {
 	}
 	if err := fs.Parse(args); err != nil {
 		return opts, err
+	}
+	if opts.demoIdle {
+		opts.demo = true
 	}
 	fs.Visit(func(f *flag.Flag) {
 		if f.Name == "sudo" {
@@ -174,6 +182,9 @@ func applyOverrides(cfg *config.Config, opts options) {
 // pickBackend returns the demo backend or the real one.
 func pickBackend(cfg config.Config, opts options,
 	backendCompat compat.Result) (ssh.Backend, error) {
+	if opts.demoIdle {
+		return openssh.NewIdleFake(), nil
+	}
 	if opts.demo {
 		return openssh.NewFake(), nil
 	}

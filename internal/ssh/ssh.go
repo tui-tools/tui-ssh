@@ -7,6 +7,7 @@ package ssh
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strconv"
 	"strings"
@@ -380,6 +381,13 @@ type Model struct {
 	Effective bool
 	// EffectiveReason explains why `sshd -T` was not used, when it was not.
 	EffectiveReason string
+	// PrivsepMissing reports that sshd refused to run because its privilege
+	// separation directory does not exist, and PrivsepDir names that
+	// directory as sshd printed it. On a socket-activated machine this is the
+	// normal idle state: the directory is ssh.service's RuntimeDirectory, so it
+	// appears only once the service has started.
+	PrivsepMissing bool
+	PrivsepDir     string
 
 	// Settings are the keywords in force: the security-relevant ones first, in
 	// a fixed order, then everything else alphabetically.
@@ -566,6 +574,38 @@ type WritePlan struct {
 	// Commands are run in order, and are what the confirm dialog shows.
 	Commands []Command
 }
+
+// ErrPrivsepMissing is what an edit returns when sshd could not check the staged
+// file because its privilege separation directory is missing. It is not a
+// refusal of the value: sshd never got as far as reading it.
+var ErrPrivsepMissing = errors.New("sshd's privilege separation directory is missing")
+
+// PrivsepMissingError is ErrPrivsepMissing with what the UI needs to act on
+// it: the directory, why it is missing, and — only when creating it is the
+// right repair — the previewable command that does.
+//
+// The edit is never let through without the check. Under socket activation an
+// unchecked file sshd rejects would fail every new connection, so the only way
+// forward is to make the check runnable and run it again.
+type PrivsepMissingError struct {
+	// Dir is the directory sshd named.
+	Dir string
+	// Explanation is the sentence the UI shows: what state the server is in,
+	// and how it gets out of it.
+	Explanation string
+	// Fix creates the directory. It is nil when the directory is not a runtime
+	// directory under /run, which means a broken installation rather than an
+	// idle service, and is not something to paper over.
+	Fix *Command
+}
+
+// Error describes the condition without calling it a refusal.
+func (e *PrivsepMissingError) Error() string {
+	return "sshd could not check the file: " + e.Explanation
+}
+
+// Unwrap makes errors.Is(err, ErrPrivsepMissing) hold.
+func (e *PrivsepMissingError) Unwrap() error { return ErrPrivsepMissing }
 
 // Backend is the boundary between the UI and the machine. Load reads state;
 // the Build* methods turn user intent into previewable Commands; Run executes
