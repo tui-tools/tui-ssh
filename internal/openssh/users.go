@@ -1,6 +1,8 @@
 package openssh
 
 import (
+	"errors"
+	"io/fs"
 	"sort"
 	"strconv"
 	"strings"
@@ -62,6 +64,7 @@ func ParsePasswd(raw string, groups map[int]string) []ssh.User {
 		gid, _ := strconv.Atoi(fields[3])
 		user := ssh.User{
 			Name:     name,
+			UID:      uid,
 			Group:    groups[gid],
 			Home:     home,
 			KeysPath: AuthorizedKeysPathFor(home),
@@ -148,6 +151,9 @@ func LoadAuthorizedKeys(users []ssh.User, read ReadFunc) []ssh.User {
 // escalated fallback returns a `cat` message rather than an os error, so both
 // forms are recognised.
 func isNotExist(err error) bool {
+	if errors.Is(err, fs.ErrNotExist) {
+		return true
+	}
 	message := strings.ToLower(err.Error())
 	return strings.Contains(message, "no such file or directory")
 }

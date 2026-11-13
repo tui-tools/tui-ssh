@@ -243,48 +243,80 @@ var demoUser = ssh.User{
 }
 
 func TestBuildCreateSSHDir(t *testing.T) {
-	cmd, err := BuildCreateSSHDir(demoUser)
+	cmd, err := BuildCreateSSHDir(demoUser, ProgramNames)
 	if err != nil {
 		t.Fatalf("BuildCreateSSHDir: %v", err)
 	}
-	want := "install -d -m 700 -o deploy -g deploy " + SSHDirFor(deployHome)
+	// Run as the account: a ~/.ssh the account pointed somewhere else cannot
+	// take root's chmod or chown with it.
+	want := "runuser -u deploy -- install -d -m 700 " + SSHDirFor(deployHome)
 	if got := cmd.String(); got != want {
 		t.Errorf("argv %q, want %q", got, want)
 	}
 	if !cmd.Destructive {
-		t.Errorf("creating a directory as root is a change worth confirming")
+		t.Errorf("creating a directory in somebody's home is a change worth confirming")
 	}
 }
 
 func TestBuildInstallAuthorizedKeys(t *testing.T) {
-	cmd, err := BuildInstallAuthorizedKeys("/tmp/tui-ssh-42/authorized_keys", demoUser)
+	const content = "ssh-ed25519 AAAA deploy@laptop\n"
+	cmd, err := BuildInstallAuthorizedKeys(content, demoUser, ProgramNames)
 	if err != nil {
 		t.Fatalf("BuildInstallAuthorizedKeys: %v", err)
 	}
-	want := "install -m 600 -o deploy -g deploy /tmp/tui-ssh-42/authorized_keys " +
+	// The content travels on stdin: the account runs the install and must not
+	// be able to read this tool's private staging directory.
+	want := "runuser -u deploy -- install -m 600 /dev/stdin " +
 		AuthorizedKeysPathFor(deployHome)
 	if got := cmd.String(); got != want {
 		t.Errorf("argv %q, want %q", got, want)
 	}
+	if cmd.Stdin != content {
+		t.Errorf("stdin = %q, want %q", cmd.Stdin, content)
+	}
 	if !cmd.Destructive {
 		t.Errorf("overwriting somebody's authorized_keys is a destructive change")
 	}
-
-	for _, bad := range []string{"", "relative/path", "/tmp/x;reboot", "/tmp/a b"} {
-		if _, err := BuildInstallAuthorizedKeys(bad, demoUser); err == nil {
-			t.Errorf("BuildInstallAuthorizedKeys accepted the staging path %q", bad)
+	for _, arg := range cmd.Argv {
+		if arg == "-o" || arg == "-g" {
+			t.Errorf("%q still sets an owner", cmd.String())
 		}
 	}
 }
 
+// TestKeyCommandsUseTheResolvedPrograms keeps the preview honest: runuser looks
+// its command up on PATH, so the real backend hands it the absolute path it
+// resolved, and the argv shows that path.
+func TestKeyCommandsUseTheResolvedPrograms(t *testing.T) {
+	programs := Programs{Install: "/usr/bin/install", Cat: "/usr/bin/cat"}
+	cmd, err := BuildInstallAuthorizedKeys("", demoUser, programs)
+	if err != nil {
+		t.Fatalf("BuildInstallAuthorizedKeys: %v", err)
+	}
+	want := "runuser -u deploy -- /usr/bin/install -m 600 /dev/stdin " +
+		AuthorizedKeysPathFor(deployHome)
+	if got := cmd.String(); got != want {
+		t.Errorf("argv %q, want %q", got, want)
+	}
+	read, err := BuildReadAuthorizedKeys(demoUser, programs)
+	if err != nil {
+		t.Fatalf("BuildReadAuthorizedKeys: %v", err)
+	}
+	want = "runuser -u deploy -- /usr/bin/cat -- " + AuthorizedKeysPathFor(deployHome)
+	if got := strings.Join(read, " "); got != want {
+		t.Errorf("argv %q, want %q", got, want)
+	}
+}
+
 // TestKeyCommandsRefuseAnAccountTheyCannotTrust: the account name and its home
-// are read out of /etc/passwd and then land in an argv that runs as root, so
+// are read out of /etc/passwd and then land in an argv that runs privileged, so
 // they are checked here rather than trusted for having come from a file.
 func TestKeyCommandsRefuseAnAccountTheyCannotTrust(t *testing.T) {
 	bad := []ssh.User{
 		{Name: "", Home: "/home/x"},
 		{Name: "de ploy", Home: "/home/deploy"},
 		{Name: "deploy; reboot", Home: "/home/deploy"},
+		{Name: "-deploy", Home: "/home/deploy"},
 		{Name: "deploy", Home: "relative"},
 		{Name: "deploy", Home: deployHome + "/../../etc"},
 		{Name: "deploy", Home: "/home/de ploy"},
@@ -295,13 +327,85 @@ func TestKeyCommandsRefuseAnAccountTheyCannotTrust(t *testing.T) {
 		if err := CheckUser(user); err == nil {
 			t.Errorf("CheckUser accepted %+v", user)
 		}
-		if _, err := BuildCreateSSHDir(user); err == nil {
+		if _, err := BuildCreateSSHDir(user, ProgramNames); err == nil {
 			t.Errorf("BuildCreateSSHDir accepted %+v", user)
 		}
-		if _, err := BuildInstallAuthorizedKeys("/tmp/tui-ssh-1/authorized_keys",
-			user); err == nil {
+		if _, err := BuildInstallAuthorizedKeys("", user, ProgramNames); err == nil {
 			t.Errorf("BuildInstallAuthorizedKeys accepted %+v", user)
 		}
+		if _, err := BuildReadAuthorizedKeys(user, ProgramNames); err == nil {
+			t.Errorf("BuildReadAuthorizedKeys accepted %+v", user)
+		}
+	}
+}
+
+// TestCheckKeyPaths covers the refusals: a name that could send a read or a
+// write somewhere other than the account's own ~/.ssh.
+func TestCheckKeyPaths(t *testing.T) {
+	dir := func(uid int) PathState { return PathState{Kind: KindDir, UID: uid} }
+	file := func(uid int) PathState { return PathState{Kind: KindFile, UID: uid} }
+	missing := PathState{Kind: KindMissing}
+	link := PathState{Kind: KindSymlink, UID: 1000}
+	deploy := demoUser
+	deploy.UID = 1000
+	root := ssh.User{Name: "root", Home: "/root", UID: 0}
+
+	tests := []struct {
+		name      string
+		user      ssh.User
+		dir, file PathState
+		want      string // empty: accepted
+	}{
+		{name: "nothing there yet", user: deploy, dir: missing, file: missing},
+		{name: "a directory, no file", user: deploy, dir: dir(1000), file: missing},
+		{name: "both the account's", user: deploy, dir: dir(1000), file: file(1000)},
+		{name: "root's own keys", user: root, dir: dir(0), file: file(0)},
+		{name: "symlinked file", user: deploy, dir: dir(1000), file: link,
+			want: "/home/deploy/.ssh/authorized_keys is a symbolic link"},
+		{name: "symlinked directory", user: deploy, dir: link, file: missing,
+			want: "/home/deploy/.ssh is a symbolic link"},
+		{name: "directory owned by another account", user: deploy, dir: dir(1001),
+			file: missing,
+			want: "/home/deploy/.ssh belongs to uid 1001, not to deploy (uid 1000)"},
+		{name: "file owned by root", user: deploy, dir: dir(1000), file: file(0),
+			want: "/home/deploy/.ssh/authorized_keys belongs to uid 0"},
+		{name: "a file where the directory goes", user: deploy, dir: file(1000),
+			file: missing, want: "/home/deploy/.ssh is not a directory"},
+		{name: "a socket where the file goes", user: deploy, dir: dir(1000),
+			file: PathState{Kind: KindOther, UID: 1000},
+			want: "/home/deploy/.ssh/authorized_keys is not a regular file"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := CheckKeyPaths(tc.user, tc.dir, tc.file)
+			switch {
+			case tc.want == "" && err != nil:
+				t.Errorf("refused: %v", err)
+			case tc.want != "" && err == nil:
+				t.Errorf("accepted, want a refusal containing %q", tc.want)
+			case tc.want != "" && !strings.Contains(err.Error(), tc.want):
+				t.Errorf("error %q does not contain %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseStat(t *testing.T) {
+	tests := map[string]PathState{
+		"1000 directory":          {Kind: KindDir, UID: 1000},
+		"0 regular file":          {Kind: KindFile, UID: 0},
+		"1000 regular empty file": {Kind: KindFile, UID: 1000},
+		"1000 symbolic link":      {Kind: KindSymlink, UID: 1000},
+		"1000 socket":             {Kind: KindOther, UID: 1000},
+	}
+	for out, want := range tests {
+		got, err := ParseStat(out + "\n")
+		if err != nil || got != want {
+			t.Errorf("ParseStat(%q) = %+v, %v; want %+v", out, got, err, want)
+		}
+	}
+	if _, err := ParseStat("stat: cannot statx"); err == nil {
+		t.Error("ParseStat accepted an error message")
 	}
 }
 

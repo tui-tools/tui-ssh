@@ -270,9 +270,10 @@ func TestAddingAnAuthorizedKeyPreviewsBothCommands(t *testing.T) {
 		t.Fatalf("previewed %d commands, want the mkdir and the install:\n%s",
 			len(previews), a.confirm.Command)
 	}
+	// Both run as ana, so neither can be pointed at another account's files.
 	want := []string{
-		"sudo -n install -d -m 700 -o ana -g ana " + openssh.SSHDirFor(anaHome),
-		"sudo -n install -m 600 -o ana -g ana /tmp/tui-ssh/authorized_keys " +
+		"sudo -n runuser -u ana -- install -d -m 700 " + openssh.SSHDirFor(anaHome),
+		"sudo -n runuser -u ana -- install -m 600 /dev/stdin " +
 			openssh.AuthorizedKeysPathFor(anaHome),
 	}
 	for i, preview := range previews {
@@ -353,8 +354,8 @@ func TestRemovingAnAuthorizedKeyRewritesTheFile(t *testing.T) {
 		t.Errorf("the dialog does not say what removal costs:\n%s", a.confirm.Body)
 	}
 
-	want := "sudo -n install -m 600 -o deploy -g deploy " +
-		"/tmp/tui-ssh/authorized_keys " + openssh.AuthorizedKeysPathFor(deployHome)
+	want := "sudo -n runuser -u deploy -- install -m 600 /dev/stdin " +
+		openssh.AuthorizedKeysPathFor(deployHome)
 	if a.confirm.Command != want {
 		t.Errorf("previewed %q, want %q", a.confirm.Command, want)
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/big"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/tui-tools/tui-ssh/internal/ssh"
@@ -95,16 +96,6 @@ func CheckUser(user ssh.User) error {
 			user.Name)
 	}
 	return nil
-}
-
-// groupOf is the group a new file under the account's home belongs to. An
-// account whose primary group could not be read falls back to its own name,
-// which is what every distribution's useradd creates.
-func groupOf(user ssh.User) string {
-	if user.Group != "" {
-		return user.Group
-	}
-	return user.Name
 }
 
 // ParseAuthorizedKey reads one line of an authorized_keys file.
@@ -354,43 +345,167 @@ func RenderAuthorizedKeysWithout(existing, fingerprint string) (string, error) {
 // a key is selected by when one is removed.
 var fingerprintRe = regexp.MustCompile(`^SHA256:[A-Za-z0-9+/]{43}$`)
 
-// BuildCreateSSHDir creates ~/.ssh owned by the account, mode 700.
+// RunAs is the program every authorized_keys read and write runs through, so
+// it happens with the account's own privileges rather than root's.
 //
-// `install -d` is used rather than mkdir because it sets the mode and the
-// owner in the same call: there is no window in which the directory exists
-// with the wrong permissions, which is the window StrictModes would refuse the
-// key in.
-func BuildCreateSSHDir(user ssh.User) (ssh.Command, error) {
+// ~/.ssh and everything in it belong to the account, which means the account
+// decides what those names point at. A write made as root follows whatever is
+// there: a symlinked ~/.ssh sends the chmod, the chown and the new file into
+// somebody else's directory. Run as the account, the same command can only
+// reach what the account itself could, so the kernel enforces the boundary
+// instead of this tool hoping to. `runuser -u` executes the command directly,
+// without a login shell, and needs no password because only root may run it —
+// which the tool already is, or escalates to.
+const RunAs = "runuser"
+
+// Programs names the binaries a key-file command runs as the account. runuser
+// finds its command on PATH, so the real backend passes the absolute paths it
+// resolved for its own runners and the preview names exactly the binary that
+// runs; the fake passes the bare names.
+type Programs struct {
+	Install string
+	Cat     string
+}
+
+// ProgramNames is the Programs a machine without resolved paths uses: the fake,
+// and the tests.
+var ProgramNames = Programs{Install: "install", Cat: "cat"}
+
+// asAccount is the argv that runs a command with an account's privileges.
+func asAccount(user ssh.User, argv ...string) []string {
+	return append([]string{RunAs, "-u", user.Name, "--"}, argv...)
+}
+
+// PathKind is what lstat says a path is, without following a symlink.
+type PathKind int
+
+// The kinds a key path can be. Only a directory for ~/.ssh and a regular file
+// for authorized_keys are written through.
+const (
+	KindMissing PathKind = iota
+	KindDir
+	KindFile
+	KindSymlink
+	KindOther
+)
+
+// PathState is one lstat of ~/.ssh or authorized_keys: what the name is and who
+// owns it. It is the name's own state — a symlink is reported as a symlink,
+// never as what it points at.
+type PathState struct {
+	Kind PathKind
+	UID  int
+}
+
+// CheckKeyPaths refuses to touch an account's key files when either name could
+// send a write somewhere else: a symlink, something that is neither a directory
+// nor a regular file, or a name owned by anybody but the account.
+//
+// The commands run as the account, so the kernel would refuse most of these on
+// its own; this check is what turns that into a sentence on the screen before
+// anything is asked, and it also covers the read the diff is built from.
+func CheckKeyPaths(user ssh.User, dir, file PathState) error {
+	err := checkKeyPath(user, SSHDirFor(user.Home), dir, KindDir, "a directory")
+	if err != nil {
+		return err
+	}
+	return checkKeyPath(user, AuthorizedKeysPathFor(user.Home), file, KindFile,
+		"a regular file")
+}
+
+// checkKeyPath checks one of the two names against the kind it has to be.
+func checkKeyPath(user ssh.User, name string, state PathState,
+	want PathKind, wantWords string) error {
+	switch {
+	case state.Kind == KindMissing:
+		return nil
+	case state.Kind == KindSymlink:
+		return fmt.Errorf(
+			"openssh: %s is a symbolic link; refusing to read or write through it "+
+				"(replace it with %s owned by %s)", name, wantWords, user.Name)
+	case state.Kind != want:
+		return fmt.Errorf("openssh: %s is not %s; refusing to touch it",
+			name, wantWords)
+	case state.UID != user.UID:
+		return fmt.Errorf(
+			"openssh: %s belongs to uid %d, not to %s (uid %d); refusing to touch "+
+				"it (chown it to %s first)", name, state.UID, user.Name, user.UID,
+			user.Name)
+	}
+	return nil
+}
+
+// ParseStat reads the `stat -c '%u %F'` line of one path — its owner's uid and
+// the file type in words — into a PathState. Without -L, stat describes the
+// name itself, so a symlink comes back as "symbolic link".
+func ParseStat(out string) (PathState, error) {
+	uidText, kind, ok := strings.Cut(strings.TrimSpace(out), " ")
+	uid, err := strconv.Atoi(uidText)
+	if !ok || err != nil {
+		return PathState{}, fmt.Errorf("openssh: unexpected stat output %q", out)
+	}
+	state := PathState{Kind: KindOther, UID: uid}
+	switch kind {
+	case "directory":
+		state.Kind = KindDir
+	case "regular file", "regular empty file":
+		state.Kind = KindFile
+	case "symbolic link":
+		state.Kind = KindSymlink
+	}
+	return state, nil
+}
+
+// BuildCreateSSHDir creates ~/.ssh, mode 700, as the account.
+//
+// `install -d` is used rather than mkdir because it sets the mode in the same
+// call: there is no window in which the directory exists with the wrong
+// permissions, which is the window StrictModes would refuse the key in. Run as
+// the account, the directory is the account's own and so is its group.
+func BuildCreateSSHDir(user ssh.User, programs Programs) (ssh.Command, error) {
 	if err := CheckUser(user); err != nil {
 		return ssh.Command{}, err
 	}
 	dir := SSHDirFor(user.Home)
 	return ssh.Command{
-		Argv: []string{"install", "-d", "-m", SSHDirMode,
-			"-o", user.Name, "-g", groupOf(user), dir},
-		Description: "Create " + dir + " owned by " + user.Name +
+		Argv: asAccount(user, programs.Install, "-d", "-m", SSHDirMode, dir),
+		Description: "Create " + dir + " as " + user.Name +
 			", mode " + SSHDirMode + " (it may already exist)",
 		Destructive: true,
 	}, nil
 }
 
-// BuildInstallAuthorizedKeys copies a staged authorized_keys into the account's
-// home, owned by the account and mode 600.
-func BuildInstallAuthorizedKeys(tempPath string, user ssh.User) (ssh.Command, error) {
-	if !stagedRe.MatchString(tempPath) {
-		return ssh.Command{}, fmt.Errorf("openssh: %q is not a staging path", tempPath)
-	}
+// BuildInstallAuthorizedKeys writes the new authorized_keys, mode 600, as the
+// account.
+//
+// The content travels on stdin. The staged copy ssh-keygen checked sits in this
+// tool's private temporary directory, which is exactly what the account must
+// not be able to read — and the account is who runs the install. `install`
+// replaces the name rather than writing through it, so the file that lands is
+// a new regular file holding what the diff showed.
+func BuildInstallAuthorizedKeys(content string, user ssh.User,
+	programs Programs) (ssh.Command, error) {
 	if err := CheckUser(user); err != nil {
 		return ssh.Command{}, err
 	}
 	destination := AuthorizedKeysPathFor(user.Home)
 	return ssh.Command{
-		Argv: []string{"install", "-m", AuthorizedKeysMode,
-			"-o", user.Name, "-g", groupOf(user), tempPath, destination},
-		Description: "Install " + tempPath + " as " + destination +
-			", owned by " + user.Name,
+		Argv: asAccount(user, programs.Install, "-m", AuthorizedKeysMode,
+			"/dev/stdin", destination),
+		Stdin:       content,
+		Description: "Write " + destination + " as " + user.Name,
 		Destructive: true,
 	}, nil
+}
+
+// BuildReadAuthorizedKeys is the read of an account's authorized_keys, as the
+// account. What it returns is what the diff is built from and what the install
+// writes back, so it is held to the same rule as the write.
+func BuildReadAuthorizedKeys(user ssh.User, programs Programs) ([]string, error) {
+	if err := CheckUser(user); err != nil {
+		return nil, err
+	}
+	return asAccount(user, programs.Cat, "--", AuthorizedKeysPathFor(user.Home)), nil
 }
 
 // BuildFingerprintKey asks ssh-keygen what it makes of a staged key file.
