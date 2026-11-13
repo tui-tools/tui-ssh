@@ -273,8 +273,7 @@ func TestAddingAnAuthorizedKeyPreviewsBothCommands(t *testing.T) {
 	// Both run as ana, so neither can be pointed at another account's files.
 	want := []string{
 		"sudo -n runuser -u ana -- install -d -m 700 " + openssh.SSHDirFor(anaHome),
-		"sudo -n runuser -u ana -- install -m 600 /dev/stdin " +
-			openssh.AuthorizedKeysPathFor(anaHome),
+		"sudo -n runuser -u ana -- tee " + openssh.AuthorizedKeysPathFor(anaHome),
 	}
 	for i, preview := range previews {
 		if strings.TrimPrefix(preview, "$ ") != want[i] {
@@ -293,6 +292,10 @@ func TestAddingAnAuthorizedKeyPreviewsBothCommands(t *testing.T) {
 		}
 	}
 
+	// tee echoes the file it wrote; the status line is not the place for it.
+	if strings.Contains(a.status, "ssh-") {
+		t.Errorf("status echoes the key file: %q", a.status)
+	}
 	// And the sample machine now shows the key, the way a real one would.
 	user, ok := a.model.User("ana")
 	if !ok || len(user.Keys) != 2 {
@@ -354,7 +357,7 @@ func TestRemovingAnAuthorizedKeyRewritesTheFile(t *testing.T) {
 		t.Errorf("the dialog does not say what removal costs:\n%s", a.confirm.Body)
 	}
 
-	want := "sudo -n runuser -u deploy -- install -m 600 /dev/stdin " +
+	want := "sudo -n runuser -u deploy -- tee " +
 		openssh.AuthorizedKeysPathFor(deployHome)
 	if a.confirm.Command != want {
 		t.Errorf("previewed %q, want %q", a.confirm.Command, want)
@@ -369,6 +372,11 @@ func TestRemovingAnAuthorizedKeyRewritesTheFile(t *testing.T) {
 		t.Errorf("ran %q, want the previewed %q", got, want)
 	}
 
+	// tee echoes the keys that stay; shown after the removal's title, one of
+	// them would read as the key that went.
+	if strings.Contains(a.status, "ssh-") {
+		t.Errorf("status echoes a remaining key: %q", a.status)
+	}
 	after, _ := a.model.User("deploy")
 	if len(after.Keys) != 1 {
 		t.Fatalf("deploy has %d keys after the removal", len(after.Keys))

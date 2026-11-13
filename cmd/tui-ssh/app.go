@@ -150,6 +150,10 @@ type plan struct {
 	// has run, the same edit is built again, with the same answers, and its
 	// own confirm dialog opens. Cancelled, it goes back to the form.
 	retryForm bool
+	// quiet drops what the commands print from the status line. A key file
+	// is written with tee, which echoes the whole file back; after a removal
+	// its first line would read as the key that went.
+	quiet bool
 }
 
 // newApp builds the model around a backend.
@@ -211,7 +215,7 @@ func (a *app) run(p plan) tea.Cmd {
 			if err != nil {
 				return ranMsg{title: p.title, output: out, err: err, retryForm: p.retryForm}
 			}
-			if trimmed := strings.TrimSpace(out); trimmed != "" {
+			if trimmed := strings.TrimSpace(out); trimmed != "" && !p.quiet {
 				outputs = append(outputs, trimmed)
 			}
 		}
@@ -741,7 +745,7 @@ func (a *app) openMatchForm() tea.Cmd {
 func (a *app) pickKeyUser() tea.Cmd {
 	if !a.caps.SupportsAuthorizedKeys {
 		a.setStatus(ui.StatusWarn,
-			"authorized keys need runuser, install and cat on this machine")
+			"authorized keys need runuser, install, tee and cat on this machine")
 		return nil
 	}
 	names := a.model.UserNames()
@@ -784,7 +788,7 @@ func (a *app) confirmAddKey(user, pasted string) tea.Cmd {
 		return nil
 	}
 	title := "Add a public key to " + user
-	a.openWriteConfirm(title, write)
+	a.openKeyConfirm(title, write)
 	return nil
 }
 
@@ -792,7 +796,7 @@ func (a *app) confirmAddKey(user, pasted string) tea.Cmd {
 func (a *app) confirmRemoveKey() tea.Cmd {
 	if !a.caps.SupportsAuthorizedKeys {
 		a.setStatus(ui.StatusWarn,
-			"authorized keys need runuser, install and cat on this machine")
+			"authorized keys need runuser, install, tee and cat on this machine")
 		return nil
 	}
 	row, ok := a.selectedUserRow()
@@ -808,7 +812,7 @@ func (a *app) confirmRemoveKey() tea.Cmd {
 		return nil
 	}
 	title := "Remove " + row.key.Fingerprint + " from " + row.user.Name
-	a.openWriteConfirm(title, write)
+	a.openKeyConfirm(title, write)
 	return nil
 }
 
@@ -823,6 +827,13 @@ func (a *app) openWriteConfirm(title string, write ssh.WritePlan) {
 		Danger:  true,
 		Payload: plan{title: title, commands: write.Commands},
 	}
+}
+
+// openKeyConfirm is openWriteConfirm for an authorized_keys change, whose
+// output (tee echoing the file) is kept off the status line.
+func (a *app) openKeyConfirm(title string, write ssh.WritePlan) {
+	a.openWriteConfirm(title, write)
+	a.confirm.Payload = plan{title: title, commands: write.Commands, quiet: true}
 }
 
 // editable reports whether a keyword is one the guided editor offers.

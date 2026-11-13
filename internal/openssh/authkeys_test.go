@@ -264,12 +264,19 @@ func TestBuildInstallAuthorizedKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildInstallAuthorizedKeys: %v", err)
 	}
-	// The content travels on stdin: the account runs the install and must not
-	// be able to read this tool's private staging directory.
-	want := "runuser -u deploy -- install -m 600 /dev/stdin " +
-		AuthorizedKeysPathFor(deployHome)
+	// The content travels on stdin and tee writes it from the descriptor it
+	// was handed: the account runs the write and must not be able to read
+	// this tool's private staging directory, and it cannot reopen /dev/stdin
+	// either, because the pipe belongs to root (or to the admin behind sudo).
+	want := "runuser -u deploy -- tee " + AuthorizedKeysPathFor(deployHome)
 	if got := cmd.String(); got != want {
 		t.Errorf("argv %q, want %q", got, want)
+	}
+	for _, arg := range cmd.Argv {
+		if arg == "/dev/stdin" || arg == "/proc/self/fd/0" {
+			t.Errorf("%q makes the account reopen a pipe it does not own",
+				cmd.String())
+		}
 	}
 	if cmd.Stdin != content {
 		t.Errorf("stdin = %q, want %q", cmd.Stdin, content)
@@ -288,14 +295,23 @@ func TestBuildInstallAuthorizedKeys(t *testing.T) {
 // its command up on PATH, so the real backend hands it the absolute path it
 // resolved, and the argv shows that path.
 func TestKeyCommandsUseTheResolvedPrograms(t *testing.T) {
-	programs := Programs{Install: "/usr/bin/install", Cat: "/usr/bin/cat"}
+	programs := Programs{Install: "/usr/bin/install", Tee: "/usr/bin/tee",
+		Cat: "/usr/bin/cat"}
 	cmd, err := BuildInstallAuthorizedKeys("", demoUser, programs)
 	if err != nil {
 		t.Fatalf("BuildInstallAuthorizedKeys: %v", err)
 	}
-	want := "runuser -u deploy -- /usr/bin/install -m 600 /dev/stdin " +
-		AuthorizedKeysPathFor(deployHome)
+	want := "runuser -u deploy -- /usr/bin/tee " + AuthorizedKeysPathFor(deployHome)
 	if got := cmd.String(); got != want {
+		t.Errorf("argv %q, want %q", got, want)
+	}
+	create, err := BuildCreateAuthorizedKeys(demoUser, programs)
+	if err != nil {
+		t.Fatalf("BuildCreateAuthorizedKeys: %v", err)
+	}
+	want = "runuser -u deploy -- /usr/bin/install -m 600 /dev/null " +
+		AuthorizedKeysPathFor(deployHome)
+	if got := create.String(); got != want {
 		t.Errorf("argv %q, want %q", got, want)
 	}
 	read, err := BuildReadAuthorizedKeys(demoUser, programs)
