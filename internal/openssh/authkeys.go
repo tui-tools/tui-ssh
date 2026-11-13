@@ -364,12 +364,13 @@ const RunAs = "runuser"
 // runs; the fake passes the bare names.
 type Programs struct {
 	Install string
+	Tee     string
 	Cat     string
 }
 
 // ProgramNames is the Programs a machine without resolved paths uses: the fake,
 // and the tests.
-var ProgramNames = Programs{Install: "install", Cat: "cat"}
+var ProgramNames = Programs{Install: "install", Tee: "tee", Cat: "cat"}
 
 // asAccount is the argv that runs a command with an account's privileges.
 func asAccount(user ssh.User, argv ...string) []string {
@@ -475,14 +476,39 @@ func BuildCreateSSHDir(user ssh.User, programs Programs) (ssh.Command, error) {
 	}, nil
 }
 
-// BuildInstallAuthorizedKeys writes the new authorized_keys, mode 600, as the
-// account.
+// BuildCreateAuthorizedKeys creates an empty authorized_keys, mode 600, as the
+// account, for the case where there is none yet. Copying /dev/null through
+// `install` sets the mode in the same call, so the write that follows does not
+// leave it to the umask.
+func BuildCreateAuthorizedKeys(user ssh.User, programs Programs) (ssh.Command, error) {
+	if err := CheckUser(user); err != nil {
+		return ssh.Command{}, err
+	}
+	destination := AuthorizedKeysPathFor(user.Home)
+	return ssh.Command{
+		Argv: asAccount(user, programs.Install, "-m", AuthorizedKeysMode,
+			"/dev/null", destination),
+		Description: "Create " + destination + " as " + user.Name +
+			", mode " + AuthorizedKeysMode,
+		Destructive: true,
+	}, nil
+}
+
+// BuildInstallAuthorizedKeys writes the new authorized_keys as the account.
 //
-// The content travels on stdin. The staged copy ssh-keygen checked sits in this
+// The content travels on stdin and is written by `tee`, which reads the
+// descriptor it was handed. The staged copy ssh-keygen checked sits in this
 // tool's private temporary directory, which is exactly what the account must
-// not be able to read — and the account is who runs the install. `install`
-// replaces the name rather than writing through it, so the file that lands is
-// a new regular file holding what the diff showed.
+// not be able to read — and the account is who runs the write. Naming
+// /dev/stdin to `install` does not work either: it reopens the pipe through
+// /proc/self/fd/0, the kernel checks that open against the pipe's owner (root,
+// or the admin behind sudo), and the account gets EACCES — after install has
+// already unlinked the file it was replacing.
+//
+// The file is either the regular file owned by the account that was checked
+// just before the plan was built, which keeps its mode, or the empty one
+// BuildCreateAuthorizedKeys made mode 600. Run as the account, a name swapped
+// in the meantime can only lead somewhere the account could already write.
 func BuildInstallAuthorizedKeys(content string, user ssh.User,
 	programs Programs) (ssh.Command, error) {
 	if err := CheckUser(user); err != nil {
@@ -490,12 +516,34 @@ func BuildInstallAuthorizedKeys(content string, user ssh.User,
 	}
 	destination := AuthorizedKeysPathFor(user.Home)
 	return ssh.Command{
-		Argv: asAccount(user, programs.Install, "-m", AuthorizedKeysMode,
-			"/dev/stdin", destination),
+		Argv:        asAccount(user, programs.Tee, destination),
 		Stdin:       content,
-		Description: "Write " + destination + " as " + user.Name,
+		Description: "Write " + destination + " from standard input, as " + user.Name,
 		Destructive: true,
 	}, nil
+}
+
+// keyWriteCommands is the plan both backends use to add a key: the directory,
+// the empty file when there is none yet, and the write.
+func keyWriteCommands(user ssh.User, content string, exists bool,
+	programs Programs) ([]ssh.Command, error) {
+	createDir, err := BuildCreateSSHDir(user, programs)
+	if err != nil {
+		return nil, err
+	}
+	commands := []ssh.Command{createDir}
+	if !exists {
+		create, err := BuildCreateAuthorizedKeys(user, programs)
+		if err != nil {
+			return nil, err
+		}
+		commands = append(commands, create)
+	}
+	write, err := BuildInstallAuthorizedKeys(content, user, programs)
+	if err != nil {
+		return nil, err
+	}
+	return append(commands, write), nil
 }
 
 // BuildReadAuthorizedKeys is the read of an account's authorized_keys, as the

@@ -359,11 +359,13 @@ This screen is who has one.
 staged the paste is checked — one line, not a private key, no per-key options
 smuggled in front of it — and then the staged file is handed to `ssh-keygen -lf`
 and the dialog reports the fingerprint **ssh-keygen** gave back, not one this
-tool worked out for itself. Two commands follow, both previewed:
+tool worked out for itself. Two commands follow, three when the account has no
+`authorized_keys` yet, all previewed:
 
 ```sh
 runuser -u ana -- /usr/bin/install -d -m 700 /home/ana/.ssh
-runuser -u ana -- /usr/bin/install -m 600 /dev/stdin /home/ana/.ssh/authorized_keys
+runuser -u ana -- /usr/bin/install -m 600 /dev/null /home/ana/.ssh/authorized_keys   # only when there is none yet
+runuser -u ana -- /usr/bin/tee /home/ana/.ssh/authorized_keys
 ```
 
 The modes are part of the plan rather than left to the umask, because with
@@ -371,9 +373,11 @@ The modes are part of the plan rather than left to the umask, because with
 `authorized_keys` and leaves you staring at a key that is plainly there and
 plainly not working.
 
-Both run **as the account**, through `runuser -u`, never as root, and the new
+They run **as the account**, through `runuser -u`, never as root, and the new
 file goes in on standard input — the same text the diff showed and ssh-keygen
-read. The account owns `~/.ssh` and decides what its names point at; run as the
+read. `tee` writes it from the descriptor it was handed: naming `/dev/stdin` to
+`install` would make the account reopen a pipe that belongs to root (or to the
+admin behind sudo), which the kernel refuses. The account owns `~/.ssh` and decides what its names point at; run as the
 account, a command can only reach what the account itself could, so a symbolic
 link cannot carry the write, the mode or the ownership into another account's
 files. Reading the file for the diff runs the same way, as
@@ -486,8 +490,8 @@ Every one of these is previewed and confirmed first.
 | --- | --- |
 | `e` | `sshd -t -f <staged file>` (a read, before the question), then `install -m 600 <staged file> /etc/ssh/sshd_config.d/90-tui-ssh.conf` and `systemctl reload <unit>` |
 | `m` | the same three, with the keyword written inside a `Match` block |
-| `A` | `ssh-keygen -l -f <staged file>` (a read, before the question), then `runuser -u <user> -- install -d -m 700 <home>/.ssh` and `runuser -u <user> -- install -m 600 /dev/stdin <home>/.ssh/authorized_keys` |
-| `R` | on the users screen: `runuser -u <user> -- install -m 600 /dev/stdin <home>/.ssh/authorized_keys`, with the selected key rewritten out |
+| `A` | `ssh-keygen -l -f <staged file>` (a read, before the question), then `runuser -u <user> -- install -d -m 700 <home>/.ssh`, `runuser -u <user> -- install -m 600 /dev/null <home>/.ssh/authorized_keys` when there is none yet, and `runuser -u <user> -- tee <home>/.ssh/authorized_keys` |
+| `R` | on the users screen: `runuser -u <user> -- tee <home>/.ssh/authorized_keys`, with the selected key rewritten out |
 | `t` | `loginctl terminate-session <id>` |
 | `b` | `ufw deny from <address>`, and only when ufw is the active firewall |
 | `K` | `install -d -m 700 /etc/ssh/tui-ssh-hostkeys-<stamp>`, `mv -- <the key files> <that directory>/`, `ssh-keygen -A`, `systemctl reload <unit>` |

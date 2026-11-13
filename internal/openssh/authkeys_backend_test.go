@@ -57,6 +57,11 @@ const victimKeys = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHVu7l48AcDeT36Odle6Mnfl
 const pastedKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHVu7l48AcDeT36Odle6Mnflh5Bs" +
 	"VHir2huMQEf+qt4Z deploy@laptop"
 
+// secondKey is another well-formed key, for adding to a file that already
+// holds pastedKey's blob.
+const secondKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEqzotOhqPdHsY1mZQK50Ss3p4CZ" +
+	"V9j/O/hIlt3kcN67 deploy@phone"
+
 // TestKeyChangesRefuseARedirectedName is the regression test for writes that
 // followed the account's own symlinks with root's privileges: whatever the
 // names under ~/.ssh point at, no plan is built and the users screen reports
@@ -144,8 +149,14 @@ func TestKeyChangesOnAnOrdinaryHome(t *testing.T) {
 			t.Fatalf("BuildAddAuthorizedKey: %v", err)
 		}
 		assertRunAsAccount(t, "deploy", plan.Commands)
-		if len(plan.Commands) != 2 || plan.Commands[1].Stdin != pastedKey+"\n" {
-			t.Errorf("commands = %+v", plan.Commands)
+		// The directory, then an empty file mode 600 so tee does not leave
+		// the mode to the umask, then the content on stdin.
+		if len(plan.Commands) != 3 || plan.Commands[2].Stdin != pastedKey+"\n" {
+			t.Fatalf("commands = %+v", plan.Commands)
+		}
+		if got := plan.Commands[1].String(); !strings.HasSuffix(got,
+			"install -m 600 /dev/null "+AuthorizedKeysPathFor(model.Users[0].Home)) {
+			t.Errorf("the file is not created mode 600 first: %q", got)
 		}
 	})
 
@@ -160,6 +171,18 @@ func TestKeyChangesOnAnOrdinaryHome(t *testing.T) {
 		if len(model.Users[0].Keys) != 1 {
 			t.Fatalf("read %d keys from the account's own file",
 				len(model.Users[0].Keys))
+		}
+
+		// An existing file is written in place by tee, with nothing that
+		// truncates or unlinks it first.
+		add, err := backend.BuildAddAuthorizedKey(model, "deploy", secondKey)
+		if err != nil {
+			t.Fatalf("BuildAddAuthorizedKey: %v", err)
+		}
+		assertRunAsAccount(t, "deploy", add.Commands)
+		if len(add.Commands) != 2 {
+			t.Errorf("an existing file was planned as %d commands: %+v",
+				len(add.Commands), add.Commands)
 		}
 
 		remove, err := backend.BuildRemoveAuthorizedKey(model, "deploy",

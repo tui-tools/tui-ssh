@@ -414,7 +414,13 @@ func (f *Fake) apply(cmd ssh.Command) (string, error) {
 	case argv[0] == "install" && argv[1] == "-m" &&
 		argv[len(argv)-1] == DropInPath:
 		return f.installDropIn(argv)
-	case argv[0] == "install" && argv[1] == "-m":
+	case argv[0] == "install" && argv[1] == "-m" && argv[len(argv)-2] == "/dev/null":
+		// The empty key file an add creates first.
+		if _, ok := f.keys[argv[len(argv)-1]]; !ok {
+			f.keys[argv[len(argv)-1]] = ""
+		}
+		return "", nil
+	case argv[0] == "tee" && len(argv) == 2:
 		return f.installAuthorizedKeys(argv, cmd.Stdin)
 	case argv[0] == "loginctl" && argv[1] == "terminate-session":
 		return f.terminate(argv[2])
@@ -503,22 +509,16 @@ func withoutRunAs(argv []string) []string {
 	return argv[4:]
 }
 
-// installAuthorizedKeys applies a key file written from stdin to the sample
-// machine and re-reads the accounts from it.
+// installAuthorizedKeys applies a key file written from stdin by tee to the
+// sample machine and re-reads the accounts from it.
 func (f *Fake) installAuthorizedKeys(argv []string, content string) (string, error) {
 	destination := argv[len(argv)-1]
-	if len(argv) < 2 || argv[len(argv)-2] != "/dev/stdin" {
-		return "", fmt.Errorf("install: %s is not written from stdin", destination)
-	}
-	if content == "" {
-		// The last key was removed. The file stays, empty, exactly as the real
-		// install would leave it.
-		f.keys[destination] = ""
-	} else {
-		f.keys[destination] = content
-	}
+	// The last key removed leaves the file there, empty, exactly as the real
+	// tee would.
+	f.keys[destination] = content
 	f.model.Users = f.users()
-	return "", nil
+	// tee echoes what it wrote, which is what the real one does.
+	return strings.TrimSpace(content), nil
 }
 
 // terminate removes a session from the sample machine.
@@ -660,15 +660,12 @@ func (f *Fake) BuildAddAuthorizedKey(model ssh.Model, name,
 	plan.ValidationCommand = f.Preview(fingerprint)
 	plan.Validation = "ssh-keygen reads the new key as " + key.Label()
 
-	createDir, err := BuildCreateSSHDir(user, ProgramNames)
+	_, exists := f.keys[user.KeysPath]
+	commands, err := keyWriteCommands(user, content, exists, ProgramNames)
 	if err != nil {
 		return ssh.WritePlan{}, err
 	}
-	install, err := BuildInstallAuthorizedKeys(content, user, ProgramNames)
-	if err != nil {
-		return ssh.WritePlan{}, err
-	}
-	plan.Commands = []ssh.Command{createDir, install}
+	plan.Commands = commands
 	return plan, nil
 }
 

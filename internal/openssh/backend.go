@@ -59,6 +59,7 @@ var searchPaths = map[string][]string{
 	"install":    {"/usr/bin/install", "/bin/install"},
 	"mv":         {"/usr/bin/mv", "/bin/mv"},
 	"cat":        {"/usr/bin/cat", "/bin/cat"},
+	"tee":        {"/usr/bin/tee", "/bin/tee"},
 	"runuser":    {"/usr/sbin/runuser", "/sbin/runuser", "/usr/bin/runuser"},
 	"stat":       {"/usr/bin/stat", "/bin/stat"},
 	"ufw":        {"/usr/sbin/ufw", "/sbin/ufw", "/usr/bin/ufw"},
@@ -112,6 +113,9 @@ type Real struct {
 	// stat is the escalated no-follow check of a home the user cannot enter.
 	runuser *runner.Runner
 	stat    *runner.Runner
+	// tee is the resolved path of the program that writes a key file, empty
+	// when the machine has none.
+	tee string
 	// programs are the resolved paths runuser is handed.
 	programs Programs
 
@@ -196,9 +200,21 @@ func NewReal(sudoPrefix []string, caps compat.Caps) (*Real, error) {
 		SearchPaths: searchPaths["stat"],
 		SudoPrefix:  sudoPrefix,
 	})
+	// tee is only ever run as the account, behind runuser, so it needs no
+	// runner of its own: only the path runuser is handed.
+	if tee, err := runner.New(runner.Options{
+		Bin:         "tee",
+		SearchPaths: searchPaths["tee"],
+		SudoPrefix:  sudoPrefix,
+	}); err == nil {
+		real.tee = tee.Bin
+	}
 	real.programs = ProgramNames
 	if real.install != nil {
 		real.programs.Install = real.install.Bin
+	}
+	if real.tee != "" {
+		real.programs.Tee = real.tee
 	}
 	if real.cat != nil {
 		real.programs.Cat = real.cat.Bin
@@ -218,7 +234,7 @@ func (r *Real) Capabilities() ssh.Capabilities {
 	caps := capabilities
 	// A key file is only read and written as its account, through runuser.
 	caps.SupportsAuthorizedKeys = r.runuser != nil && r.install != nil &&
-		r.cat != nil
+		r.cat != nil && r.tee != ""
 	return caps
 }
 
@@ -814,7 +830,7 @@ func matchWarningFor(model ssh.Model, criteria, key, value string) string {
 // then shows — not one this tool worked out for itself.
 func (r *Real) BuildAddAuthorizedKey(model ssh.Model, name,
 	pasted string) (ssh.WritePlan, error) {
-	user, before, err := r.prepareKeyChange(model, name)
+	user, before, exists, err := r.prepareKeyChange(model, name)
 	if err != nil {
 		return ssh.WritePlan{}, err
 	}
@@ -834,15 +850,11 @@ func (r *Real) BuildAddAuthorizedKey(model ssh.Model, name,
 	plan.Warning = addKeyWarning(model, user, pastedKey)
 	r.checkStagedKey(&plan, temp, pastedKey)
 
-	createDir, err := BuildCreateSSHDir(user, r.programs)
+	commands, err := keyWriteCommands(user, content, exists, r.programs)
 	if err != nil {
 		return ssh.WritePlan{}, err
 	}
-	install, err := BuildInstallAuthorizedKeys(content, user, r.programs)
-	if err != nil {
-		return ssh.WritePlan{}, err
-	}
-	plan.Commands = []ssh.Command{createDir, install}
+	plan.Commands = commands
 	return plan, nil
 }
 
@@ -855,7 +867,7 @@ func (r *Real) BuildAddAuthorizedKey(model ssh.Model, name,
 // untouched.
 func (r *Real) BuildRemoveAuthorizedKey(model ssh.Model, name,
 	fingerprint string) (ssh.WritePlan, error) {
-	user, before, err := r.prepareKeyChange(model, name)
+	user, before, _, err := r.prepareKeyChange(model, name)
 	if err != nil {
 		return ssh.WritePlan{}, err
 	}
@@ -888,38 +900,40 @@ func (r *Real) BuildRemoveAuthorizedKey(model ssh.Model, name,
 }
 
 // prepareKeyChange resolves the account and reads its key file as it is now.
+// exists reports whether the file is there, so an add knows whether it has to
+// create it first.
 func (r *Real) prepareKeyChange(model ssh.Model,
-	name string) (ssh.User, string, error) {
+	name string) (user ssh.User, before string, exists bool, err error) {
 	user, ok := model.User(name)
 	if !ok {
-		return ssh.User{}, "",
+		return ssh.User{}, "", false,
 			fmt.Errorf("openssh: %q is not an account on this machine", name)
 	}
 	if err := CheckUser(user); err != nil {
-		return ssh.User{}, "", err
+		return ssh.User{}, "", false, err
 	}
 	if user.Unreadable != "" {
-		return ssh.User{}, "", fmt.Errorf(
+		return ssh.User{}, "", false, fmt.Errorf(
 			"openssh: %s could not be read, so it will not be rewritten: %s",
 			user.KeysPath, runner.FirstLine(user.Unreadable))
 	}
 	// The file is re-read here rather than taken from the model: what is
 	// rewritten has to be what is on disk now, not what was on disk when the
 	// screen was last loaded.
-	before, err := r.readKeys(context.Background(), user)
+	before, err = r.readKeys(context.Background(), user)
 	var refused *unsafeKeysError
 	if errors.As(err, &refused) {
-		return ssh.User{}, "", refused
+		return ssh.User{}, "", false, refused
 	}
 	if err != nil && !isNotExist(err) {
-		return ssh.User{}, "", fmt.Errorf(
+		return ssh.User{}, "", false, fmt.Errorf(
 			"openssh: %s could not be read: %s", user.KeysPath,
 			runner.FirstLine(err.Error()))
 	}
 	if err != nil {
-		before = ""
+		return user, "", false, nil
 	}
-	return user, before, nil
+	return user, before, true, nil
 }
 
 // unsafeKeysError is a refusal from CheckKeyPaths, kept apart from a read that
