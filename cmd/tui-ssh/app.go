@@ -683,7 +683,8 @@ func (a *app) openMatchForm() tea.Cmd {
 // pickKeyUser starts the add-a-key flow: which account, then the key itself.
 func (a *app) pickKeyUser() tea.Cmd {
 	if !a.caps.SupportsAuthorizedKeys {
-		a.setStatus(ui.StatusWarn, "this backend cannot manage authorized keys")
+		a.setStatus(ui.StatusWarn,
+			"authorized keys need runuser, install and cat on this machine")
 		return nil
 	}
 	names := a.model.UserNames()
@@ -733,7 +734,8 @@ func (a *app) confirmAddKey(user, pasted string) tea.Cmd {
 // confirmRemoveKey builds the plan that takes the selected key away.
 func (a *app) confirmRemoveKey() tea.Cmd {
 	if !a.caps.SupportsAuthorizedKeys {
-		a.setStatus(ui.StatusWarn, "this backend cannot manage authorized keys")
+		a.setStatus(ui.StatusWarn,
+			"authorized keys need runuser, install and cat on this machine")
 		return nil
 	}
 	row, ok := a.selectedUserRow()

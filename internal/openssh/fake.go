@@ -367,7 +367,7 @@ func (f *Fake) Ran() []ssh.Command { return f.run.Ran }
 // the change the real command would have made, so the demo stays coherent as
 // keys are pressed.
 func (f *Fake) apply(cmd ssh.Command) (string, error) {
-	argv := cmd.Argv
+	argv := withoutRunAs(cmd.Argv)
 	if len(argv) < 2 {
 		return "", nil
 	}
@@ -380,7 +380,7 @@ func (f *Fake) apply(cmd ssh.Command) (string, error) {
 		argv[len(argv)-1] == DropInPath:
 		return f.installDropIn(argv)
 	case argv[0] == "install" && argv[1] == "-m":
-		return f.installAuthorizedKeys(argv)
+		return f.installAuthorizedKeys(argv, cmd.Stdin)
 	case argv[0] == "loginctl" && argv[1] == "terminate-session":
 		return f.terminate(argv[2])
 	case argv[0] == "ssh-keygen" && argv[1] == "-A":
@@ -450,13 +450,21 @@ func applyDropIn(effective, dropIn string) string {
 	return b.String()
 }
 
-// installAuthorizedKeys applies a staged key file to the sample machine and
-// re-reads the accounts from it.
-func (f *Fake) installAuthorizedKeys(argv []string) (string, error) {
+// withoutRunAs strips the `runuser -u <name> --` a key-file command runs
+// behind, so the sample machine applies the command itself.
+func withoutRunAs(argv []string) []string {
+	if len(argv) < 5 || argv[0] != RunAs || argv[1] != "-u" || argv[3] != "--" {
+		return argv
+	}
+	return argv[4:]
+}
+
+// installAuthorizedKeys applies a key file written from stdin to the sample
+// machine and re-reads the accounts from it.
+func (f *Fake) installAuthorizedKeys(argv []string, content string) (string, error) {
 	destination := argv[len(argv)-1]
-	content, ok := f.staged[destination]
-	if !ok {
-		return "", fmt.Errorf("install: nothing staged for %s", destination)
+	if len(argv) < 2 || argv[len(argv)-2] != "/dev/stdin" {
+		return "", fmt.Errorf("install: %s is not written from stdin", destination)
 	}
 	if content == "" {
 		// The last key was removed. The file stays, empty, exactly as the real
@@ -603,11 +611,11 @@ func (f *Fake) BuildAddAuthorizedKey(model ssh.Model, name,
 	plan.ValidationCommand = f.Preview(fingerprint)
 	plan.Validation = "ssh-keygen reads the new key as " + key.Label()
 
-	createDir, err := BuildCreateSSHDir(user)
+	createDir, err := BuildCreateSSHDir(user, ProgramNames)
 	if err != nil {
 		return ssh.WritePlan{}, err
 	}
-	install, err := BuildInstallAuthorizedKeys(temp, user)
+	install, err := BuildInstallAuthorizedKeys(content, user, ProgramNames)
 	if err != nil {
 		return ssh.WritePlan{}, err
 	}
@@ -627,15 +635,20 @@ func (f *Fake) BuildRemoveAuthorizedKey(model ssh.Model, name,
 		return ssh.WritePlan{}, err
 	}
 
-	plan, temp, err := f.stageKeyFile(user, before, content)
-	if err != nil {
-		return ssh.WritePlan{}, err
+	if before == content {
+		return ssh.WritePlan{}, fmt.Errorf("%s already says exactly this",
+			user.KeysPath)
+	}
+	plan := ssh.WritePlan{
+		Path:    user.KeysPath,
+		Content: content,
+		Diff:    Diff(user.KeysPath, before, content),
 	}
 	plan.Warning = removeKeyWarning(model, user, fingerprint)
 	plan.Validated, plan.Validation = true,
 		"the remaining keys are copied through unchanged"
 
-	install, err := BuildInstallAuthorizedKeys(temp, user)
+	install, err := BuildInstallAuthorizedKeys(content, user, ProgramNames)
 	if err != nil {
 		return ssh.WritePlan{}, err
 	}

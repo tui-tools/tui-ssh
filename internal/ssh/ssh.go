@@ -293,6 +293,9 @@ func (k AuthorizedKey) Label() string {
 type User struct {
 	// Name is the account name.
 	Name string
+	// UID is the account's user id: the owner its ~/.ssh and authorized_keys
+	// must have before anything is read or written through them.
+	UID int
 	// Group is the account's primary group, which is what a new file under
 	// its home has to belong to.
 	Group string

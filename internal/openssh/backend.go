@@ -16,6 +16,9 @@
 //	journalctl   the authentication log
 //	ssh-keygen   host key fingerprints, and the regeneration
 //	install/mv   the two commands that put a file where it belongs
+//	runuser      authorized_keys reads and writes, run as the account itself
+//	             (see RunAs)
+//	stat         the no-follow check of ~/.ssh when lstat is not allowed
 //	ufw          blocking an address, and only when ufw is the active firewall
 //
 // A ninth, `cat`, is the escalated fallback for a configuration file an
@@ -25,11 +28,13 @@ package openssh
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/tui-tools/tui-kit/compat"
@@ -54,6 +59,8 @@ var searchPaths = map[string][]string{
 	"install":    {"/usr/bin/install", "/bin/install"},
 	"mv":         {"/usr/bin/mv", "/bin/mv"},
 	"cat":        {"/usr/bin/cat", "/bin/cat"},
+	"runuser":    {"/usr/sbin/runuser", "/sbin/runuser", "/usr/bin/runuser"},
+	"stat":       {"/usr/bin/stat", "/bin/stat"},
 	"ufw":        {"/usr/sbin/ufw", "/sbin/ufw", "/usr/bin/ufw"},
 }
 
@@ -101,6 +108,12 @@ type Real struct {
 	// cat is the escalated fallback for reading a configuration file an
 	// unprivileged process cannot open. See readConfigFile.
 	cat *runner.Runner
+	// runuser runs every authorized_keys read and write as the account, and
+	// stat is the escalated no-follow check of a home the user cannot enter.
+	runuser *runner.Runner
+	stat    *runner.Runner
+	// programs are the resolved paths runuser is handed.
+	programs Programs
 
 	// caps gates what only exists on a new enough OpenSSH. It comes from the
 	// manifest, so no version number is written into this file.
@@ -171,6 +184,25 @@ func NewReal(sudoPrefix []string, caps compat.Caps) (*Real, error) {
 		SearchPaths: searchPaths["cat"],
 		SudoPrefix:  sudoPrefix,
 	})
+	// runuser only works for root, so its reads escalate too; without it no
+	// key is written (see Capabilities).
+	real.runuser, _ = runner.New(runner.Options{
+		Bin:         "runuser",
+		SearchPaths: searchPaths["runuser"],
+		SudoPrefix:  sudoPrefix,
+	})
+	real.stat, _ = runner.New(runner.Options{
+		Bin:         "stat",
+		SearchPaths: searchPaths["stat"],
+		SudoPrefix:  sudoPrefix,
+	})
+	real.programs = ProgramNames
+	if real.install != nil {
+		real.programs.Install = real.install.Bin
+	}
+	if real.cat != nil {
+		real.programs.Cat = real.cat.Bin
+	}
 	return real, nil
 }
 
@@ -182,7 +214,13 @@ func (r *Real) Name() string { return "openssh" }
 func (r *Real) Describe() string { return r.sshd.Describe() }
 
 // Capabilities reports what this backend supports.
-func (r *Real) Capabilities() ssh.Capabilities { return capabilities }
+func (r *Real) Capabilities() ssh.Capabilities {
+	caps := capabilities
+	// A key file is only read and written as its account, through runuser.
+	caps.SupportsAuthorizedKeys = r.runuser != nil && r.install != nil &&
+		r.cat != nil
+	return caps
+}
 
 // Preview renders the exact command line Run will execute. Every command goes
 // through the runner of its own binary, so the preview carries the privilege
@@ -218,6 +256,8 @@ func (r *Real) runnerFor(cmd ssh.Command) *runner.Runner {
 		return r.move
 	case "ufw":
 		return r.ufw
+	case RunAs:
+		return r.runuser
 	default:
 		return nil
 	}
@@ -529,7 +569,21 @@ func (r *Real) loadUsers(ctx context.Context) []ssh.User {
 	if raw, groupErr := read(GroupPath); groupErr == nil {
 		groups = ParseGroups(raw)
 	}
-	return LoadAuthorizedKeys(ParsePasswd(passwd, groups), read)
+	users := ParsePasswd(passwd, groups)
+	byPath := make(map[string]ssh.User, len(users))
+	for _, user := range users {
+		byPath[user.KeysPath] = user
+	}
+	// Each key file is read by its own account, after the same no-follow
+	// check a change makes: what the screen lists is what a removal would
+	// later write back.
+	return LoadAuthorizedKeys(users, func(path string) (string, error) {
+		user, ok := byPath[path]
+		if !ok {
+			return "", fmt.Errorf("openssh: %s is no account's key file", path)
+		}
+		return r.readKeys(ctx, user)
+	})
 }
 
 // detectFirewall reports which firewall is actually running, which is what
@@ -755,11 +809,11 @@ func (r *Real) BuildAddAuthorizedKey(model ssh.Model, name,
 	plan.Warning = addKeyWarning(model, user, pastedKey)
 	r.checkStagedKey(&plan, temp, pastedKey)
 
-	createDir, err := BuildCreateSSHDir(user)
+	createDir, err := BuildCreateSSHDir(user, r.programs)
 	if err != nil {
 		return ssh.WritePlan{}, err
 	}
-	install, err := BuildInstallAuthorizedKeys(temp, user)
+	install, err := BuildInstallAuthorizedKeys(content, user, r.programs)
 	if err != nil {
 		return ssh.WritePlan{}, err
 	}
@@ -785,15 +839,22 @@ func (r *Real) BuildRemoveAuthorizedKey(model ssh.Model, name,
 		return ssh.WritePlan{}, err
 	}
 
-	plan, temp, err := r.stageKeyFile(user, before, content)
-	if err != nil {
-		return ssh.WritePlan{}, err
+	if before == content {
+		return ssh.WritePlan{}, fmt.Errorf("%s already says exactly this",
+			user.KeysPath)
+	}
+	// Nothing is staged: the install reads the new file from stdin, and there
+	// is no new key for ssh-keygen to look at.
+	plan := ssh.WritePlan{
+		Path:    user.KeysPath,
+		Content: content,
+		Diff:    Diff(user.KeysPath, before, content),
 	}
 	plan.Warning = removeKeyWarning(model, user, fingerprint)
 	plan.Validated, plan.Validation = true,
 		"the remaining keys are copied through unchanged"
 
-	install, err := BuildInstallAuthorizedKeys(temp, user)
+	install, err := BuildInstallAuthorizedKeys(content, user, r.programs)
 	if err != nil {
 		return ssh.WritePlan{}, err
 	}
@@ -820,7 +881,11 @@ func (r *Real) prepareKeyChange(model ssh.Model,
 	// The file is re-read here rather than taken from the model: what is
 	// rewritten has to be what is on disk now, not what was on disk when the
 	// screen was last loaded.
-	before, err := r.readConfigFile(context.Background())(user.KeysPath)
+	before, err := r.readKeys(context.Background(), user)
+	var refused *unsafeKeysError
+	if errors.As(err, &refused) {
+		return ssh.User{}, "", refused
+	}
 	if err != nil && !isNotExist(err) {
 		return ssh.User{}, "", fmt.Errorf(
 			"openssh: %s could not be read: %s", user.KeysPath,
@@ -830,6 +895,107 @@ func (r *Real) prepareKeyChange(model ssh.Model,
 		before = ""
 	}
 	return user, before, nil
+}
+
+// unsafeKeysError is a refusal from CheckKeyPaths, kept apart from a read that
+// merely failed so it reaches the screen as it is.
+type unsafeKeysError struct{ err error }
+
+func (e *unsafeKeysError) Error() string { return e.err.Error() }
+func (e *unsafeKeysError) Unwrap() error { return e.err }
+
+// lstat reports what a path is without following it.
+//
+// The plain lstat is what a root process does, and it costs nothing. A user
+// who may not enter the home directory gets EACCES instead, and the fallback is
+// `stat` without -L through the privilege prefix, which does not follow a
+// symlink either.
+func (r *Real) lstat(ctx context.Context, path string) (PathState, error) {
+	info, err := os.Lstat(path)
+	switch {
+	case err == nil:
+		return pathStateOf(info), nil
+	case os.IsNotExist(err):
+		return PathState{Kind: KindMissing}, nil
+	case !os.IsPermission(err) || r.stat == nil:
+		return PathState{}, err
+	}
+	out, err := r.stat.Read(ctx, "stat", "-c", "%u %F", "--", path)
+	if err != nil {
+		if isNotExist(fmt.Errorf("%s %w", out, err)) {
+			return PathState{Kind: KindMissing}, nil
+		}
+		return PathState{}, err
+	}
+	return ParseStat(out)
+}
+
+// pathStateOf turns an lstat result into a PathState.
+func pathStateOf(info os.FileInfo) PathState {
+	state := PathState{Kind: KindOther, UID: -1}
+	switch mode := info.Mode(); {
+	case mode&os.ModeSymlink != 0:
+		state.Kind = KindSymlink
+	case mode.IsDir():
+		state.Kind = KindDir
+	case mode.IsRegular():
+		state.Kind = KindFile
+	}
+	if sys, ok := info.Sys().(*syscall.Stat_t); ok {
+		state.UID = int(sys.Uid)
+	}
+	return state
+}
+
+// checkKeyPaths lstats ~/.ssh and authorized_keys and refuses when either
+// could redirect a read or a write. It reports whether the file exists.
+func (r *Real) checkKeyPaths(ctx context.Context, user ssh.User) (bool, error) {
+	if err := CheckUser(user); err != nil {
+		return false, err
+	}
+	dir, err := r.lstat(ctx, SSHDirFor(user.Home))
+	if err != nil {
+		return false, err
+	}
+	file := PathState{Kind: KindMissing}
+	if dir.Kind == KindDir {
+		if file, err = r.lstat(ctx, AuthorizedKeysPathFor(user.Home)); err != nil {
+			return false, err
+		}
+	}
+	if err := CheckKeyPaths(user, dir, file); err != nil {
+		return false, &unsafeKeysError{err: err}
+	}
+	return file.Kind == KindFile, nil
+}
+
+// readKeys reads an account's authorized_keys after checking it, as the
+// account. A missing file reads as "no such file or directory", which is what
+// isNotExist recognises.
+//
+// The read is held to the same rule as the write because it decides it: the
+// diff is built from it, and the install writes back everything it returned
+// plus or minus one line. Read as root through a swapped name, another
+// account's keys would end up on screen as this one's, and then in this
+// account's file.
+func (r *Real) readKeys(ctx context.Context, user ssh.User) (string, error) {
+	exists, err := r.checkKeyPaths(ctx, user)
+	if err != nil {
+		return "", err
+	}
+	if !exists {
+		return "", fmt.Errorf("%s: %w", user.KeysPath, os.ErrNotExist)
+	}
+	if r.runuser == nil {
+		// Without runuser nothing is written (see Capabilities), so this read
+		// only ever feeds the users screen.
+		return r.readConfigFile(ctx)(user.KeysPath)
+	}
+	argv, err := BuildReadAuthorizedKeys(user, r.programs)
+	if err != nil {
+		return "", err
+	}
+	return r.runuser.Read(ctx, argv...)
 }
 
 // stageKeyFile writes the pending authorized_keys and starts the plan around

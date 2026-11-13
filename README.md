@@ -362,14 +362,25 @@ and the dialog reports the fingerprint **ssh-keygen** gave back, not one this
 tool worked out for itself. Two commands follow, both previewed:
 
 ```sh
-install -d -m 700 -o ana -g ana /home/ana/.ssh
-install -m 600 -o ana -g ana <staged file> /home/ana/.ssh/authorized_keys
+runuser -u ana -- /usr/bin/install -d -m 700 /home/ana/.ssh
+runuser -u ana -- /usr/bin/install -m 600 /dev/stdin /home/ana/.ssh/authorized_keys
 ```
 
 The modes are part of the plan rather than left to the umask, because with
 `StrictModes` on — the default — sshd ignores a group-writable `~/.ssh` or
 `authorized_keys` and leaves you staring at a key that is plainly there and
 plainly not working.
+
+Both run **as the account**, through `runuser -u`, never as root, and the new
+file goes in on standard input — the same text the diff showed and ssh-keygen
+read. The account owns `~/.ssh` and decides what its names point at; run as the
+account, a command can only reach what the account itself could, so a symbolic
+link cannot carry the write, the mode or the ownership into another account's
+files. Reading the file for the diff runs the same way, as
+`runuser -u ana -- cat`. Before any of it, `~/.ssh` and `authorized_keys` are
+checked without following links: a symbolic link, something that is not a
+directory or a regular file, or a name owned by another account is refused, and
+the account's row on this screen says which.
 
 `R` on this screen removes the selected key, identified by its **fingerprint**
 rather than by its position: the file is re-read, rewritten without that one
@@ -474,8 +485,8 @@ Every one of these is previewed and confirmed first.
 | --- | --- |
 | `e` | `sshd -t -f <staged file>` (a read, before the question), then `install -m 600 <staged file> /etc/ssh/sshd_config.d/90-tui-ssh.conf` and `systemctl reload <unit>` |
 | `m` | the same three, with the keyword written inside a `Match` block |
-| `A` | `ssh-keygen -l -f <staged file>` (a read, before the question), then `install -d -m 700 -o <user> -g <group> <home>/.ssh` and `install -m 600 -o <user> -g <group> <staged file> <home>/.ssh/authorized_keys` |
-| `R` | on the users screen: `install -m 600 -o <user> -g <group> <staged file> <home>/.ssh/authorized_keys`, with the selected key rewritten out |
+| `A` | `ssh-keygen -l -f <staged file>` (a read, before the question), then `runuser -u <user> -- install -d -m 700 <home>/.ssh` and `runuser -u <user> -- install -m 600 /dev/stdin <home>/.ssh/authorized_keys` |
+| `R` | on the users screen: `runuser -u <user> -- install -m 600 /dev/stdin <home>/.ssh/authorized_keys`, with the selected key rewritten out |
 | `t` | `loginctl terminate-session <id>` |
 | `b` | `ufw deny from <address>`, and only when ufw is the active firewall |
 | `K` | `install -d -m 700 /etc/ssh/tui-ssh-hostkeys-<stamp>`, `mv -- <the key files> <that directory>/`, `ssh-keygen -A`, `systemctl reload <unit>` |
@@ -651,14 +662,15 @@ Model{Effective, EffectiveReason, Settings, Files, Service, Sessions, Auth,
       HostKeys, Users, Firewall}
 Setting{Key, Value, Effective, Security, Verdict, Note, Sources, Default}
 Source{File, Line, Text, Match}
-User{Name, Group, Home, KeysPath, Keys, Unreadable}
+User{Name, UID, Group, Home, KeysPath, Keys, Unreadable}
 AuthorizedKey{Line, Options, Type, Bits, Fingerprint, Comment, Raw}
 ```
 
-`internal/openssh` is the only package that starts a process. It drives eight
-programs through eight kit runners — `sshd`, `systemctl`, `ss`, `loginctl`,
-`journalctl`, `ssh-keygen`, `install` and `mv`, plus `ufw` for the one rule and
-`cat` for the escalated read — and
+`internal/openssh` is the only package that starts a process. It drives each
+program through a kit runner of its own — `sshd`, `systemctl`, `ss`, `loginctl`,
+`journalctl`, `ssh-keygen`, `install` and `mv`, plus `ufw` for the one rule,
+`cat` for the escalated read, `runuser` for every read and write of an
+account's `authorized_keys`, and `stat` for the no-follow check before it — and
 [`check-exec.sh`](https://github.com/tui-tools/tui-kit/blob/main/tools/check-exec.sh)
 fails the build if any other package imports `os/exec`.
 
@@ -721,8 +733,10 @@ widgets, the config loader and the command runner shared by the whole family.
 - Two reads escalate, unprompted, through `sudo -n`: `sshd -T`, and `cat` for a
   file the plain read cannot open. Fedora and Arch ship `/etc/ssh/sshd_config`
   mode 0600, so without the second one those machines would show every setting
-  as coming from nowhere; the same fallback is what reads another account's
-  `~/.ssh/authorized_keys`, which is mode 700 all the way down. Both fall back
+  as coming from nowhere. Another account's `~/.ssh/authorized_keys`, which is
+  mode 700 all the way down, is read with `runuser -u <user> -- cat` instead,
+  as that account, after a no-follow check of `~/.ssh` (`stat`, escalated, when
+  the home cannot be entered). Both fall back
   rather than demanding a password, and the screen says which answer you are
   looking at — an account whose keys could not be read says so on its row,
   rather than showing an empty list that would read as "nobody has a key here".
