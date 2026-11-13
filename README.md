@@ -398,6 +398,7 @@ does that from here too.
 ```sh
 tui-ssh                        # drive the real server
 tui-ssh --demo                 # sample server, no privileges needed
+tui-ssh --demo-idle            # the same, socket-activated and not started yet
 tui-ssh --check                # read the server, print JSON, exit
 tui-ssh --report               # print what a bug report needs, exit
 tui-ssh --theme ~/mytheme/colors.toml
@@ -575,6 +576,17 @@ block's criteria.
   leaves an idle one to read the new file when the socket starts it, and a
   `Port` or `ListenAddress` change with `systemctl daemon-reload` and
   `systemctl restart ssh.socket`, since the socket is what listens.
+- Until something has connected, an idle socket-activated `ssh.service` has no
+  `/run/sshd` (its `RuntimeDirectory`), and sshd refuses both `sshd -T` and
+  `sshd -t -f` with `Missing privilege separation directory`. The header then
+  says `config: from files (sshd idle)`, the service screen and `--check`
+  (`privsepMissing`, `privsepDir`) explain why, and an edit offers one
+  previewed, confirmed step, `install -d -m 0755 -o root -g root /run/sshd`,
+  before checking the same edit again. The directory is read from sshd's own
+  message; one outside `/run` (`/var/empty/sshd`, `/usr/share/empty.sshd`)
+  belongs to the package and is only explained. A file sshd has not checked
+  is never installed in this state: under socket activation a configuration
+  sshd rejects would fail every new connection.
 - Follow the active Omarchy theme, and respect `NO_COLOR`.
 
 ## What v0.1 cannot do

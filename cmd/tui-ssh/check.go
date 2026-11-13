@@ -55,6 +55,11 @@ type checkReport struct {
 	// not. A smoke test asserts on this before it asserts on a value.
 	Effective       bool   `json:"effective"`
 	EffectiveReason string `json:"effectiveReason,omitempty"`
+	// PrivsepMissing reports that sshd stopped at its missing privilege
+	// separation directory, PrivsepDir. On a socket-activated server that is
+	// the idle state before the first connection, and EffectiveReason says so.
+	PrivsepMissing bool   `json:"privsepMissing"`
+	PrivsepDir     string `json:"privsepDir,omitempty"`
 
 	// Verdicts are the security-relevant settings, in the order the screen
 	// shows them. Findings counts the ones worse than ok.
@@ -124,6 +129,8 @@ func runCheck(backend ssh.Backend, backendCompat compat.Result,
 		Describe:        backend.Describe(),
 		Effective:       model.Effective,
 		EffectiveReason: model.EffectiveReason,
+		PrivsepMissing:  model.PrivsepMissing,
+		PrivsepDir:      model.PrivsepDir,
 		Sessions:        len(model.Sessions),
 		FailedLogins:    model.Auth.Failed,
 		InvalidUsers:    model.Auth.InvalidUser,

@@ -149,7 +149,14 @@ func (a *app) headerView() string {
 	// Where the settings came from. It is the first thing that decides how
 	// much the rest of the screen is worth, so it is not buried.
 	configValue, configStyle := "effective", t.OK
-	if !a.model.Effective {
+	switch {
+	case a.model.PrivsepMissing && service.SocketActivated && !service.Active:
+		// Not a fault: sshd cannot be asked until the service has started
+		// once, and the service rows say how that happens.
+		configValue, configStyle = "from files (sshd idle)", t.Warn
+	case a.model.PrivsepMissing:
+		configValue, configStyle = "from files (no "+a.model.PrivsepDir+")", t.Warn
+	case !a.model.Effective:
 		configValue, configStyle = "from files", t.Warn
 	}
 	facts = append(facts, ui.Fact{Label: "config", Value: configValue, Style: &configStyle})
@@ -473,6 +480,9 @@ func (a *app) serviceRows() []serviceRow {
 	}
 	if !a.model.Effective {
 		rows = append(rows, serviceRow{"config read", a.model.EffectiveReason})
+	}
+	if a.model.PrivsepMissing {
+		rows = append(rows, serviceRow{"privsep dir", a.model.PrivsepDir + " is missing"})
 	}
 	for _, file := range a.model.Files {
 		if file.Unreadable != "" {

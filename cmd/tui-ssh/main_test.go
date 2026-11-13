@@ -123,3 +123,37 @@ func TestCheckRunsNothing(t *testing.T) {
 		t.Errorf("--check ran %d commands: %v", len(ran), ran)
 	}
 }
+
+// TestCheckExplainsAnIdleServer: --demo-idle selects the idle sample, and
+// --check says why the settings came from the files, under names a script can
+// assert on.
+func TestCheckExplainsAnIdleServer(t *testing.T) {
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = devNull.Close() }()
+	opts, err := parseFlags([]string{"--demo-idle"}, devNull)
+	if err != nil || !opts.demo || !opts.demoIdle {
+		t.Fatalf("opts = %+v, err = %v", opts, err)
+	}
+	backend, err := pickBackend(baseConfig(), opts, compat.Result{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := runCheck(backend, compat.Result{}, &out); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"effective": false`,
+		`"privsepMissing": true`,
+		`"privsepDir": "/run/sshd"`,
+		`"socketActivated": true`,
+		`idle under socket activation`,
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("--check output is missing %s", want)
+		}
+	}
+}

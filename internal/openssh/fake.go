@@ -150,6 +150,38 @@ func NewFake() *Fake {
 	return f
 }
 
+// demoPrivsepDir is the sample machine's privilege separation directory, the
+// one Debian and Ubuntu build sshd with.
+const demoPrivsepDir = "/run/sshd"
+
+// NewIdleFake is the sample machine as an Ubuntu server looks right after
+// boot: ssh.socket listens, ssh.service has not started yet, so /run/sshd does
+// not exist and sshd refuses `sshd -T` and `sshd -t -f` alike. It backs
+// `--demo-idle` and the tests of that state. Creating the directory, which an
+// edit offers, ends it.
+func NewIdleFake() *Fake {
+	f := NewFake()
+	f.model.Service = ssh.Service{
+		Unit: "ssh", ActiveState: "inactive", UnitFileState: "disabled",
+		Socket: "ssh.socket", SocketActivated: true,
+		SocketUnitFileState: "enabled", SocketActiveState: "active",
+		Listeners: []ssh.Listener{
+			{Address: "0.0.0.0", Port: 22, Process: "systemd"},
+			{Address: "[::]", Port: 22, Process: "systemd"},
+		},
+		Guards: f.model.Service.Guards,
+	}
+	// Nothing has connected, so nobody is logged in, and the settings are
+	// what the files say: sshd itself would not answer.
+	f.model.Sessions = nil
+	f.model.Effective = false
+	f.model.PrivsepMissing, f.model.PrivsepDir = true, demoPrivsepDir
+	f.model.EffectiveReason = PrivsepExplanation(demoPrivsepDir, f.model.Service)
+	f.model.Settings = Order(Judge(AttachSources(SettingsFromFiles(f.model.Files),
+		f.model.Files)))
+	return f
+}
+
 // reset builds the sample state. It is a function rather than a literal so
 // --demo starts from the same machine every time, however it was left.
 func (f *Fake) reset() {
@@ -372,6 +404,9 @@ func (f *Fake) apply(cmd ssh.Command) (string, error) {
 		return "", nil
 	}
 	switch {
+	case argv[0] == "install" && argv[1] == "-d" && f.model.PrivsepMissing &&
+		argv[len(argv)-1] == f.model.PrivsepDir:
+		return f.createPrivsepDir()
 	case argv[0] == "install" && argv[1] == "-d":
 		// Creating ~/.ssh changes nothing a screen shows: the sample machine's
 		// directories are implied by the key files themselves.
@@ -386,6 +421,15 @@ func (f *Fake) apply(cmd ssh.Command) (string, error) {
 	case argv[0] == "ssh-keygen" && argv[1] == "-A":
 		return f.regenerateHostKeys()
 	}
+	return "", nil
+}
+
+// createPrivsepDir ends the idle state: sshd can answer again, so the
+// settings are its own from here on.
+func (f *Fake) createPrivsepDir() (string, error) {
+	f.model.PrivsepMissing, f.model.PrivsepDir = false, ""
+	f.model.Effective, f.model.EffectiveReason = true, ""
+	f.model.Settings = f.settings(applyDropIn(demoEffective, currentDropIn(f.model)))
 	return "", nil
 }
 
@@ -543,6 +587,11 @@ func (f *Fake) dropInPlan(model ssh.Model, before, content,
 	warning string) (ssh.WritePlan, error) {
 	if before == content {
 		return ssh.WritePlan{}, fmt.Errorf("%s already says exactly this", DropInPath)
+	}
+	if f.model.PrivsepMissing {
+		// What the real backend returns when `sshd -t -f` stops at the
+		// missing directory: no plan, and the fix to offer.
+		return ssh.WritePlan{}, privsepError(f.model.PrivsepDir, f.model.Service)
 	}
 
 	temp := "/tmp/tui-ssh/" + DropInName

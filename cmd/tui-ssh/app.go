@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -134,6 +135,8 @@ type ranMsg struct {
 	title  string
 	output string
 	err    error
+	// retryForm is carried over from the plan: see plan.retryForm.
+	retryForm bool
 }
 
 // plan is what a confirm dialog is holding: one or more commands, run in
@@ -142,6 +145,11 @@ type ranMsg struct {
 type plan struct {
 	title    string
 	commands []ssh.Command
+	// retryForm marks a step that only exists to let the open form's edit be
+	// checked: creating sshd's missing privilege separation directory. Once it
+	// has run, the same edit is built again, with the same answers, and its
+	// own confirm dialog opens. Cancelled, it goes back to the form.
+	retryForm bool
 }
 
 // newApp builds the model around a backend.
@@ -201,13 +209,14 @@ func (a *app) run(p plan) tea.Cmd {
 		for _, cmd := range p.commands {
 			out, err := backend.Run(ctx, cmd)
 			if err != nil {
-				return ranMsg{title: p.title, output: out, err: err}
+				return ranMsg{title: p.title, output: out, err: err, retryForm: p.retryForm}
 			}
 			if trimmed := strings.TrimSpace(out); trimmed != "" {
 				outputs = append(outputs, trimmed)
 			}
 		}
-		return ranMsg{title: p.title, output: strings.Join(outputs, "; ")}
+		return ranMsg{title: p.title, output: strings.Join(outputs, "; "),
+			retryForm: p.retryForm}
 	}
 }
 
@@ -254,6 +263,9 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ranMsg:
 		a.busy = false
+		if msg.retryForm {
+			return a, a.retryFormAfter(msg)
+		}
 		if msg.err != nil {
 			a.setStatus(ui.StatusError, msg.err.Error())
 			return a, a.load()
@@ -324,6 +336,10 @@ func (a *app) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	pending, ok := a.confirm.Payload.(plan)
 	a.confirm = ui.Confirm{}
 	if !confirmed || !ok {
+		if ok && pending.retryForm {
+			// The edit is still open: back to it, unchanged.
+			a.mode = modeForm
+		}
 		a.setStatus(ui.StatusInfo, "cancelled")
 		return a, nil
 	}
@@ -444,12 +460,53 @@ func (a *app) handleForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // commands that apply it.
 func (a *app) submitForm() tea.Cmd {
 	write, err := a.buildFormPlan()
+	var privsep *ssh.PrivsepMissingError
+	if errors.As(err, &privsep) && privsep.Fix != nil {
+		a.openPrivsepConfirm(privsep)
+		return nil
+	}
 	if err != nil {
 		a.setStatus(ui.StatusError, err.Error())
 		return nil
 	}
 	a.openWriteConfirm(a.formTitle(), write)
 	return nil
+}
+
+// openPrivsepConfirm offers the one step that lets sshd check the edit: create
+// its missing privilege separation directory. It is a write to /run, so it is
+// previewed and confirmed like every other; nothing creates it on its own.
+func (a *app) openPrivsepConfirm(privsep *ssh.PrivsepMissingError) {
+	title := "Create " + privsep.Dir
+	a.mode = modeConfirm
+	a.confirm = ui.Confirm{
+		Title: title,
+		Body: privsep.Explanation + ".\n\nsshd stopped before reading the " +
+			"edited file, so this is not a verdict on the value. tui-ssh does " +
+			"not install a file sshd has not checked: on a socket-activated " +
+			"server one it rejects would fail every new connection. After this " +
+			"step the edit is checked again and shown for confirmation.",
+		Command: a.backend.Preview(*privsep.Fix),
+		Danger:  true,
+		Payload: plan{title: title, commands: []ssh.Command{*privsep.Fix},
+			retryForm: true},
+	}
+}
+
+// retryFormAfter follows the privilege separation step: on success the open
+// edit is built again and its own confirm dialog opens; either way the screen
+// re-reads the server, which now answers `sshd -T` too. The form stays open
+// underneath, so a failure leaves the user where they were.
+func (a *app) retryFormAfter(msg ranMsg) tea.Cmd {
+	a.mode = modeForm
+	a.loading = true
+	if msg.err != nil {
+		a.setStatus(ui.StatusError, msg.err.Error())
+		return a.load()
+	}
+	a.setStatusf(ui.StatusOK, "%s: done; checking the edit again", msg.title)
+	a.submitForm()
+	return a.load()
 }
 
 // buildFormPlan asks the backend for the plan the open form describes, at file

@@ -291,7 +291,7 @@ func (r *Real) Load(ctx context.Context, window string) (ssh.Model, error) {
 	model := ssh.Model{Backend: r.Name()}
 
 	model.Files = ParseConfigTree(r.readConfigFile(ctx), filepath.Glob, ConfigPath)
-	settings, effective, reason := r.loadSettings(ctx)
+	settings, effective, reason, privsepDir := r.loadSettings(ctx)
 	if len(settings) == 0 && len(model.Files) == 0 {
 		return ssh.Model{}, fmt.Errorf(
 			"openssh: neither `sshd -T` nor %s could be read: %s", ConfigPath, reason)
@@ -300,6 +300,14 @@ func (r *Real) Load(ctx context.Context, window string) (ssh.Model, error) {
 	model.Settings = Order(Judge(AttachSources(settings, model.Files)))
 
 	model.Service = r.loadService(ctx)
+	if privsepDir != "" {
+		// sshd stopped before reading any configuration. The reason it gave
+		// reads like a configuration error, so it is replaced by one that
+		// names the state the server is in — which depends on the service,
+		// hence after loadService.
+		model.PrivsepMissing, model.PrivsepDir = true, privsepDir
+		model.EffectiveReason = PrivsepExplanation(privsepDir, model.Service)
+	}
 	model.Sessions = r.loadSessions(ctx, model.Port())
 	model.HostKeys = JudgeHostKeys(r.loadHostKeys(ctx))
 	model.Users = r.loadUsers(ctx)
@@ -321,16 +329,23 @@ func (r *Real) Load(ctx context.Context, window string) (ssh.Model, error) {
 // which is the difference between "what the file says" and "what the server
 // does". When it fails — no sudo, or a configuration it refuses to parse — the
 // files are read instead and the screen says which of the two it is showing.
+//
+// privsepDir is set when sshd stopped at its missing privilege separation
+// directory, which is how an idle socket-activated server answers.
 func (r *Real) loadSettings(ctx context.Context) (settings []ssh.Setting,
-	effective bool, reason string) {
+	effective bool, reason, privsepDir string) {
 	out, err := r.sshd.Read(ctx, "sshd", "-T")
 	if err == nil {
 		if parsed := ParseEffective(out); len(parsed) > 0 {
-			return parsed, true, ""
+			return parsed, true, "", ""
 		}
-		return nil, false, "`sshd -T` printed nothing that parsed as a setting"
+		return nil, false, "`sshd -T` printed nothing that parsed as a setting", ""
 	}
-	return SettingsFromFiles(r.filesFor(ctx)), false, runner.FirstLine(err.Error())
+	reason = runner.FirstLine(err.Error())
+	if dir, ok := MissingPrivsepDir(out); ok {
+		privsepDir = dir
+	}
+	return SettingsFromFiles(r.filesFor(ctx)), false, reason, privsepDir
 }
 
 // filesFor re-reads the configuration tree. loadSettings needs it before Load
@@ -677,8 +692,18 @@ func (r *Real) buildDropInPlan(model ssh.Model, key, before, content,
 	}
 	plan.ValidationCommand = r.Preview(validate)
 	out, err := r.Run(context.Background(), validate)
+	if dir, ok := MissingPrivsepDir(out); err != nil && ok {
+		// sshd stopped before it read the file, so this is neither a refusal
+		// nor a check that could not run. It must not fall through to the
+		// "could not run" branch below either: that one lets the file in
+		// unchecked, and under socket activation a file sshd rejects fails
+		// every new connection. The edit waits until the check can run.
+		_ = os.RemoveAll(filepath.Dir(temp))
+		return ssh.WritePlan{}, privsepError(dir, model.Service)
+	}
 	switch {
 	case err != nil && strings.TrimSpace(out) != "":
+		_ = os.RemoveAll(filepath.Dir(temp))
 		return ssh.WritePlan{}, fmt.Errorf("sshd refused the file: %s",
 			runner.FirstLine(out))
 	case err != nil:
