@@ -8,6 +8,7 @@ package ssh
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -606,6 +607,36 @@ func (e *PrivsepMissingError) Error() string {
 
 // Unwrap makes errors.Is(err, ErrPrivsepMissing) hold.
 func (e *PrivsepMissingError) Unwrap() error { return ErrPrivsepMissing }
+
+// The fields of the setting editor a refusal can be about. The UI names its
+// form fields with the same strings, so a refusal lands next to the field that
+// holds the value it is about.
+const (
+	FieldKey        = "key"
+	FieldValue      = "value"
+	FieldMatchType  = "match-type"
+	FieldMatchValue = "match-value"
+)
+
+// FieldError is a value the editor refused, attributed to the form field that
+// holds it. Reason says what is wrong and what is accepted instead. It never
+// quotes the value itself: the form shows what was typed, and a refusal that
+// repeated it would put whatever was pasted into the field (a key, a password
+// typed in the wrong box) into every message that is copied or logged.
+type FieldError struct {
+	// Field is one of the Field* names.
+	Field string
+	// Reason is the refusal, without the value.
+	Reason string
+}
+
+// Error is the reason, prefixed the way the other backend errors are.
+func (e *FieldError) Error() string { return "openssh: " + e.Reason }
+
+// RefusedField builds a FieldError.
+func RefusedField(field, format string, args ...any) error {
+	return &FieldError{Field: field, Reason: fmt.Sprintf(format, args...)}
+}
 
 // Backend is the boundary between the UI and the machine. Load reads state;
 // the Build* methods turn user intent into previewable Commands; Run executes

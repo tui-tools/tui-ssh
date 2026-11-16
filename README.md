@@ -237,6 +237,11 @@ sshd would refuse is a message on the form rather than a service that fails to
 reload after the file is already in `/etc`. The dialog then shows the check, the
 unified diff, and the commands that apply it. `y` runs them, `n` does not.
 
+A refused value keeps the form open, with the reason under the field it is
+about and the cursor on that field. The reason says what the field accepts and
+never repeats what was typed, so a value pasted into the wrong box does not end
+up in a message.
+
 ### The Include-order caveat, read rather than assumed
 
 sshd takes the **first** value it is given for nearly every keyword. So whether

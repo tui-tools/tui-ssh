@@ -687,7 +687,8 @@ func currentDropIn(model ssh.Model) string {
 func (r *Real) buildDropInPlan(model ssh.Model, key, before, content,
 	warning string) (ssh.WritePlan, error) {
 	if before == content {
-		return ssh.WritePlan{}, fmt.Errorf("%s already says exactly this", DropInPath)
+		return ssh.WritePlan{}, ssh.RefusedField(ssh.FieldValue,
+			"%s already says exactly this", DropInPath)
 	}
 
 	temp, err := stageFile(DropInPath, content)
@@ -720,8 +721,8 @@ func (r *Real) buildDropInPlan(model ssh.Model, key, before, content,
 	switch {
 	case err != nil && strings.TrimSpace(out) != "":
 		_ = os.RemoveAll(filepath.Dir(temp))
-		return ssh.WritePlan{}, fmt.Errorf("sshd refused the file: %s",
-			runner.FirstLine(out))
+		return ssh.WritePlan{}, &ssh.FieldError{Field: ssh.FieldValue,
+			Reason: "sshd refused the file: " + runner.FirstLine(out)}
 	case err != nil:
 		// The check itself could not run — no sudo, most likely. That is not a
 		// reason to refuse the edit, but it is a reason to say so on the dialog.

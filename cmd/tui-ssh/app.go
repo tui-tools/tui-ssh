@@ -470,9 +470,13 @@ func (a *app) submitForm() tea.Cmd {
 		return nil
 	}
 	if err != nil {
-		a.setStatus(ui.StatusError, err.Error())
+		// The form stays open and hides the status line, so the reason is
+		// shown on the form, next to the field it is about.
+		a.form.refuse(err)
+		a.setStatus(ui.StatusError, a.form.refusal)
 		return nil
 	}
+	a.form.clearRefusal()
 	a.openWriteConfirm(a.formTitle(), write)
 	return nil
 }
