@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -13,11 +14,14 @@ import (
 // The fields of the editor, named rather than numbered so the picker knows
 // which one it is filling. A file-scope change uses the first two; a change
 // inside a `Match` block uses all four.
+//
+// They are the backend's field names, so a refusal the backend attributes to a
+// field (ssh.FieldError) can be shown next to that field.
 const (
-	fieldKey        = "key"
-	fieldValue      = "value"
-	fieldMatchType  = "match-type"
-	fieldMatchValue = "match-value"
+	fieldKey        = ssh.FieldKey
+	fieldValue      = ssh.FieldValue
+	fieldMatchType  = ssh.FieldMatchType
+	fieldMatchValue = ssh.FieldMatchValue
 )
 
 // settingForm is the guided editor for one sshd keyword.
@@ -63,6 +67,48 @@ type settingForm struct {
 	// dropIn is the file the change lands in, named on the form so nobody has
 	// to reach the confirm dialog to find out where it is going.
 	dropIn string
+
+	// refusal is why the last submit was refused, shown on the form itself:
+	// the status line is hidden behind the dialog, so without it enter would
+	// appear to do nothing. refusalField is the field it is about, "" when it
+	// is about the change as a whole. Editing a value clears it.
+	refusal      string
+	refusalField string
+}
+
+// minRedactLen is the shortest typed value that is masked out of a refusal.
+// Anything shorter (a port digit, "no") would mask unrelated words.
+const minRedactLen = 3
+
+// refuse records why a submit was refused and moves the cursor to the field
+// the refusal is about. The reason is the backend's own sentence, with any
+// typed value masked out of it: sshd's parser quotes the line it rejects, and
+// whatever was pasted into a text box must not travel on in a message.
+func (f *settingForm) refuse(err error) {
+	reason, field := err.Error(), ""
+	var refused *ssh.FieldError
+	if errors.As(err, &refused) {
+		reason, field = refused.Reason, refused.Field
+	}
+	for _, typed := range []string{f.input.Value(), f.matchInput.Value()} {
+		typed = strings.TrimSpace(typed)
+		if len(typed) >= minRedactLen {
+			reason = strings.ReplaceAll(reason, typed, "(the value)")
+		}
+	}
+	f.refusal, f.refusalField = reason, ""
+	for i, name := range f.fields {
+		if name == field {
+			f.refusalField = field
+			f.active = i
+			f.focusActive()
+		}
+	}
+}
+
+// clearRefusal drops the refusal once the value it was about has changed.
+func (f *settingForm) clearRefusal() {
+	f.refusal, f.refusalField = "", ""
 }
 
 // newSettingForm builds the editor for a keyword, seeded from what the server
@@ -269,6 +315,7 @@ func (f settingForm) activeValue() string {
 // set applies a value chosen in the picker to a field.
 func (f *settingForm) set(field, value string, model ssh.Model,
 	caps ssh.Capabilities) {
+	f.clearRefusal()
 	switch field {
 	case fieldKey:
 		for i, candidate := range f.keys {
@@ -297,6 +344,7 @@ func (f *settingForm) set(field, value string, model ssh.Model,
 
 // cycle moves a choice field one step.
 func (f *settingForm) cycle(delta int, model ssh.Model, caps ssh.Capabilities) {
+	f.clearRefusal()
 	switch f.activeField() {
 	case fieldKey:
 		if len(f.keys) == 0 {
@@ -322,6 +370,7 @@ func (f *settingForm) cycle(delta int, model ssh.Model, caps ssh.Capabilities) {
 // updateActive forwards a message to whichever text box is being edited.
 func (f *settingForm) updateActive(msg tea.Msg) tea.Cmd {
 	var cmd tea.Cmd
+	before := f.input.Value() + "\x00" + f.matchInput.Value()
 	switch f.activeField() {
 	case fieldValue:
 		if len(f.valueOptions) > 0 {
@@ -331,11 +380,16 @@ func (f *settingForm) updateActive(msg tea.Msg) tea.Cmd {
 	case fieldMatchValue:
 		f.matchInput, cmd = f.matchInput.Update(msg)
 	}
+	if f.input.Value()+"\x00"+f.matchInput.Value() != before {
+		f.clearRefusal()
+	}
 	return cmd
 }
 
 // formRow is one line of the rendered form.
 type formRow struct {
+	// field is the name of the field the row edits.
+	field  string
 	label  string
 	choice bool
 	value  string
@@ -349,17 +403,17 @@ func (f settingForm) rows() []formRow {
 	for _, field := range f.fields {
 		switch field {
 		case fieldMatchType:
-			rows = append(rows, formRow{label: "Match on", choice: true,
-				value: f.matchType()})
+			rows = append(rows, formRow{field: field, label: "Match on",
+				choice: true, value: f.matchType()})
 		case fieldMatchValue:
-			rows = append(rows, formRow{label: f.matchType(),
+			rows = append(rows, formRow{field: field, label: f.matchType(),
 				value: f.matchValue(), input: &f.matchInput})
 		case fieldKey:
-			rows = append(rows, formRow{label: "Setting", choice: true,
-				value: f.key()})
+			rows = append(rows, formRow{field: field, label: "Setting",
+				choice: true, value: f.key()})
 		case fieldValue:
-			row := formRow{label: f.key(), choice: len(f.valueOptions) > 0,
-				value: f.value()}
+			row := formRow{field: field, label: f.key(),
+				choice: len(f.valueOptions) > 0, value: f.value()}
 			if !row.choice {
 				row.input = &f.input
 			}
@@ -416,6 +470,20 @@ func (f settingForm) view(t theme.Theme, width, height int) string {
 			marker = t.Accent.Render("> ")
 		}
 		lines = append(lines, marker+label+"  "+value)
+		if f.refusal != "" && row.field == f.refusalField {
+			// The reason sits under the value it is about, indented to the
+			// value column so it reads as part of that row.
+			indent := strings.Repeat(" ", labelWidth+4)
+			for _, line := range ui.Wrap("! "+f.refusal, valueWidth) {
+				lines = append(lines, indent+t.Danger.Render(line))
+			}
+		}
+	}
+	if f.refusal != "" && f.refusalField == "" {
+		lines = append(lines, "")
+		for _, line := range ui.Wrap("! "+f.refusal, inner-4) {
+			lines = append(lines, t.Danger.Render(line))
+		}
 	}
 
 	if f.help != "" {

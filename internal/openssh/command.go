@@ -66,6 +66,9 @@ type option struct {
 	// choices or a pattern: a value that reaches a file in /etc is never taken
 	// on trust.
 	pattern *regexp.Regexp
+	// shape says in words what pattern accepts, for the refusal the form shows
+	// next to the field when a value does not match it.
+	shape string
 	// help is the one line the form shows under the field.
 	help string
 }
@@ -114,21 +117,21 @@ var editable = map[string]option{
 		help: "no stops this host being used as a tunnel."},
 	"UsePAM": {choices: yesNo,
 		help: "PAM runs the account and session stack. Most distributions need it."},
-	"Port": {pattern: portRe,
+	"Port": {pattern: portRe, shape: "a port number, 1 to 65535",
 		help: "The port sshd listens on. The firewall has to allow it."},
-	"MaxAuthTries": {pattern: numberRe,
+	"MaxAuthTries": {pattern: numberRe, shape: "a whole number of at most 6 digits",
 		help: "Attempts per connection before it is dropped. 3 is a good number."},
-	"LoginGraceTime": {pattern: graceRe,
+	"LoginGraceTime": {pattern: graceRe, shape: "seconds, or a number followed by s, m or h (30s, 2m)",
 		help: "How long an unauthenticated connection may sit. Seconds, or 30s / 2m."},
-	"ClientAliveInterval": {pattern: numberRe,
+	"ClientAliveInterval": {pattern: numberRe, shape: "a whole number of at most 6 digits",
 		help: "Seconds between keepalives; 0 turns them off."},
-	"ClientAliveCountMax": {pattern: numberRe,
+	"ClientAliveCountMax": {pattern: numberRe, shape: "a whole number of at most 6 digits",
 		help: "Missed keepalives before the session is dropped."},
-	"AllowUsers": {pattern: nameListRe,
+	"AllowUsers": {pattern: nameListRe, shape: "space-separated patterns of letters, digits and _ * ? . @ : % ! -",
 		help: "Space-separated user patterns. Setting it denies everyone else."},
-	"AllowGroups": {pattern: nameListRe,
+	"AllowGroups": {pattern: nameListRe, shape: "space-separated patterns of letters, digits and _ * ? . @ : % ! -",
 		help: "Space-separated group patterns. Setting it denies everyone else."},
-	"ListenAddress": {pattern: listenRe,
+	"ListenAddress": {pattern: listenRe, shape: "an IPv4 or IPv6 address, optionally followed by :port",
 		help: "The address to accept on; the firewall has to allow it."},
 }
 
@@ -241,18 +244,19 @@ func CheckValue(key, value string) error {
 	key = canonicalKey(key)
 	spec, ok := editable[key]
 	if !ok {
-		return fmt.Errorf("openssh: tui-ssh does not edit %s; "+
+		return ssh.RefusedField(ssh.FieldKey, "tui-ssh does not edit %s; "+
 			"change it in %s and reload", key, ConfigPath)
 	}
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return fmt.Errorf("openssh: %s needs a value", key)
+		return ssh.RefusedField(ssh.FieldValue, "%s needs a value", key)
 	}
 	// A value goes into a file, so a newline would smuggle in a second
 	// directive and a `#` would comment the rest of the line out. Neither is
 	// something a guided form should be able to produce.
 	if strings.ContainsAny(value, "\n\r#") {
-		return fmt.Errorf("openssh: a %s value cannot contain a newline or a #", key)
+		return ssh.RefusedField(ssh.FieldValue,
+			"a %s value cannot contain a newline or a #", key)
 	}
 	if len(spec.choices) > 0 {
 		for _, choice := range spec.choices {
@@ -260,16 +264,17 @@ func CheckValue(key, value string) error {
 				return nil
 			}
 		}
-		return fmt.Errorf("openssh: %s must be one of %s",
+		return ssh.RefusedField(ssh.FieldValue, "%s must be one of %s",
 			key, strings.Join(spec.choices, ", "))
 	}
 	if !spec.pattern.MatchString(value) {
-		return fmt.Errorf("openssh: %q is not a value %s takes", value, key)
+		return ssh.RefusedField(ssh.FieldValue, "%s does not take this value: %s",
+			key, valueShape(key))
 	}
 	if key == "Port" {
 		port, err := strconv.Atoi(value)
 		if err != nil || port < 1 || port > 65535 {
-			return fmt.Errorf("openssh: a port is between 1 and 65535")
+			return ssh.RefusedField(ssh.FieldValue, "a port is between 1 and 65535")
 		}
 	}
 	return nil
@@ -451,27 +456,31 @@ func MatchCriteria(matchType, matchValue string) (string, error) {
 		}
 	}
 	if canonical == "" {
-		return "", fmt.Errorf("openssh: a Match block selects on %s, not %q",
-			strings.Join(MatchTypes, ", "), matchType)
+		return "", ssh.RefusedField(ssh.FieldMatchType,
+			"a Match block selects on %s", strings.Join(MatchTypes, ", "))
 	}
 
 	value := strings.TrimSpace(matchValue)
 	if value == "" {
-		return "", fmt.Errorf("openssh: Match %s needs a value", canonical)
+		return "", ssh.RefusedField(ssh.FieldMatchValue, "Match %s needs a value", canonical)
 	}
 	if strings.ContainsAny(value, "\n\r# \t") {
-		return "", fmt.Errorf(
-			"openssh: a Match %s value is one comma-separated list, with no "+
+		return "", ssh.RefusedField(ssh.FieldMatchValue,
+			"a Match %s value is one comma-separated list, with no "+
 				"spaces and no comment", canonical)
 	}
 	items := strings.Split(value, ",")
 	if len(items) > maxMatchItems {
-		return "", fmt.Errorf("openssh: %d is more patterns than this form writes",
-			len(items))
+		return "", ssh.RefusedField(ssh.FieldMatchValue,
+			"%d is more patterns than this form writes (at most %d)",
+			len(items), maxMatchItems)
 	}
-	for _, item := range items {
-		if err := checkMatchItem(canonical, item); err != nil {
-			return "", err
+	for i, item := range items {
+		if reason := checkMatchItem(canonical, item); reason != "" {
+			if len(items) > 1 {
+				reason = fmt.Sprintf("item %d: %s", i+1, reason)
+			}
+			return "", ssh.RefusedField(ssh.FieldMatchValue, "%s", reason)
 		}
 	}
 	return canonical + " " + value, nil
@@ -481,31 +490,41 @@ func MatchCriteria(matchType, matchValue string) (string, error) {
 // line nothing on the confirm dialog can show in full.
 const maxMatchItems = 32
 
-// checkMatchItem validates one item of a criteria's list.
-func checkMatchItem(matchType, item string) error {
+// valueShape is what a free-text keyword accepts, in words.
+func valueShape(key string) string {
+	if shape := editable[canonicalKey(key)].shape; shape != "" {
+		return shape
+	}
+	return "see the help line below the field"
+}
+
+// checkMatchItem validates one item of a criteria's list. It returns the
+// reason the item is refused, "" when it is accepted; the reason never quotes
+// the item.
+func checkMatchItem(matchType, item string) string {
 	if matchType != MatchAddress {
 		if !matchNameRe.MatchString(item) {
-			return fmt.Errorf("openssh: %q is not a %s pattern",
-				item, strings.ToLower(matchType))
+			return "not a " + strings.ToLower(matchType) + " pattern " +
+				"(letters, digits and _ * ? . @ -, at most 64)"
 		}
-		return nil
+		return ""
 	}
 	// sshd negates an address pattern with a leading '!', which is part of the
 	// grammar rather than part of the address.
 	address := strings.TrimPrefix(item, "!")
 	if address == "*" {
-		return nil
+		return ""
 	}
 	if strings.Contains(address, "/") {
 		if _, err := netip.ParsePrefix(address); err != nil {
-			return fmt.Errorf("openssh: %q is not a network in CIDR form", item)
+			return "not a network in CIDR form (192.0.2.0/24)"
 		}
-		return nil
+		return ""
 	}
 	if _, err := netip.ParseAddr(address); err != nil {
-		return fmt.Errorf("openssh: %q is not an IP address or a CIDR network", item)
+		return "not an IP address or a CIDR network"
 	}
-	return nil
+	return ""
 }
 
 // unitRe is the set of characters a systemd unit name may contain. The unit

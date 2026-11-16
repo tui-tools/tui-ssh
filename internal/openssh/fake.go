@@ -586,7 +586,8 @@ func (f *Fake) BuildSetMatchOption(model ssh.Model, matchType, matchValue,
 func (f *Fake) dropInPlan(model ssh.Model, before, content,
 	warning string) (ssh.WritePlan, error) {
 	if before == content {
-		return ssh.WritePlan{}, fmt.Errorf("%s already says exactly this", DropInPath)
+		return ssh.WritePlan{}, ssh.RefusedField(ssh.FieldValue,
+			"%s already says exactly this", DropInPath)
 	}
 	if f.model.PrivsepMissing {
 		// What the real backend returns when `sshd -t -f` stops at the
