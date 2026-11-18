@@ -5,6 +5,8 @@
   "tagline": "The SSH server as it really is, with every change previewed before it runs",
   "description": "A terminal UI for the machine's SSH server. It asks sshd what its configuration actually is — `sshd -T`, not what a file says — and shows the settings that decide who gets in first, each with a verdict and the file and line that set it.\n\nFive more screens complete the picture: who is logged in right now and a way to end a session; what the authentication log says over the last day or week; the host keys and their fingerprints; the unit and its sockets; and the local accounts with the keys that log into them, where one is added or removed.\n\nChanges go to a drop-in: tui-ssh never rewrites /etc/ssh/sshd_config. It writes 90-tui-ssh.conf, checks the staged file with `sshd -t -f` before asking anything, and shows the diff and both commands. sshd takes the first value it is given, so the include order is read too: if another file already sets the keyword earlier, the tool says so instead of writing a line that would be ignored. A keyword can also go inside a `Match` block, which the file keeps last: sshd reads what follows one as part of it.\n\nRun `tui-ssh --demo` to drive a sample server: every key works, every command is built and previewed for real, and nothing touches your system.",
   "category": "ssh",
+  "stability": "stable",
+  "stableSince": "1.0.0",
   "homepage": "https://github.com/tui-tools/tui-ssh",
   "repo": "https://github.com/tui-tools/tui-ssh",
   "license": "MIT",
@@ -86,11 +88,11 @@
       "action": "Filter the rows of the current screen"
     },
     {
-      "key": "R",
-      "action": "On users, remove the selected key; on every other screen, re-read"
+      "key": "x",
+      "action": "On the users screen, remove the selected key from its account"
     },
     {
-      "key": "ctrl+r",
+      "key": "R / ctrl+r",
       "action": "Re-read the server, from any screen"
     },
     {
@@ -147,7 +149,8 @@
       "tested": [
         "9.6",
         "10.2",
-        "10.5"
+        "10.5",
+        "10.6"
       ]
     }
   ],

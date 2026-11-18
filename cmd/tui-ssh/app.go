@@ -599,17 +599,9 @@ func (a *app) handleBrowseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.mode, a.detailOffset = modeDetail, 0
-	case "R":
-		// On the users screen R removes the selected key; everywhere else it is
-		// the re-read it has always been. The two never overlap: a key can only
-		// be selected on the one screen that lists keys, and ctrl+r re-reads
-		// from there too.
-		if a.screen == screenUsers {
-			return a, a.confirmRemoveKey()
-		}
-		a.loading = true
-		return a, a.load()
-	case "ctrl+r":
+	case "R", "ctrl+r":
+		// R re-reads on every screen, as it does across the family; removing a
+		// key is x, so the key that refreshes never opens a removal.
 		a.loading = true
 		return a, a.load()
 	default:
@@ -643,17 +635,9 @@ func (a *app) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "pgup", "ctrl+b":
 		a.detailOffset = max(a.detailOffset-a.detailHeight(), 0)
 		return a, nil
-	case "R":
-		// On the users screen R removes the selected key; everywhere else it is
-		// the re-read it has always been. The two never overlap: a key can only
-		// be selected on the one screen that lists keys, and ctrl+r re-reads
-		// from there too.
-		if a.screen == screenUsers {
-			return a, a.confirmRemoveKey()
-		}
-		a.loading = true
-		return a, a.load()
-	case "ctrl+r":
+	case "R", "ctrl+r":
+		// R re-reads on every screen, as it does across the family; removing a
+		// key is x, so the key that refreshes never opens a removal.
 		a.loading = true
 		return a, a.load()
 	default:
@@ -682,6 +666,8 @@ func (a *app) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 		})
 	case "w":
 		return a.toggleWindow()
+	case "x":
+		return a.confirmRemoveKey()
 	}
 	return nil
 }

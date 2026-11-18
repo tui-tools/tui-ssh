@@ -224,7 +224,7 @@ func (a *app) defaultStatus() string {
 	case screenService:
 		return a.model.Service.Unit + suffix
 	case screenUsers:
-		return count + " rows  ·  A adds a key, R removes one" + suffix
+		return count + " rows  ·  A adds a key, x removes one" + suffix
 	default:
 		return count + " settings  ·  e changes one" + suffix
 	}
@@ -643,7 +643,7 @@ func (a *app) userDetail() []string {
 			"Whoever holds the private half of this key can log in as "+
 				row.user.Name+".",
 			"",
-			"  press R to remove this key, A to add another")
+			"  press x to remove this key, A to add another")
 		return lines
 	}
 	lines = append(lines, "",
@@ -879,7 +879,7 @@ func (a *app) shortHelpKeys() []ui.KeyHint {
 	case screenUsers:
 		hints = append(hints,
 			ui.KeyHint{Key: "A", Desc: "add key"},
-			ui.KeyHint{Key: "R", Desc: "remove key"})
+			ui.KeyHint{Key: "x", Desc: "remove key"})
 	default:
 		hints = append(hints, ui.KeyHint{Key: "e", Desc: "change"},
 			ui.KeyHint{Key: "m", Desc: "match"},
@@ -904,13 +904,13 @@ func helpKeys() []ui.KeyHint {
 		{Key: "e", Desc: "change a setting, written to a drop-in with a diff"},
 		{Key: "m", Desc: "change a setting inside a Match block"},
 		{Key: "A", Desc: "add a public key to an account (users screen)"},
-		{Key: "R", Desc: "on users, remove the selected key; elsewhere, re-read"},
+		{Key: "x", Desc: "remove the selected key (users screen)"},
 		{Key: "t", Desc: "end the selected session"},
 		{Key: "b", Desc: "block the selected address at the firewall"},
 		{Key: "w", Desc: "switch the log window between 24h and 7d"},
 		{Key: "K", Desc: "regenerate the host keys, old ones moved aside"},
 		{Key: "r", Desc: "reload the SSH service"},
-		{Key: "ctrl+r", Desc: "re-read the server, from any screen"},
+		{Key: "R / ctrl+r", Desc: "re-read the server, from any screen"},
 		{Key: "?", Desc: "this help"},
 		{Key: "q", Desc: "quit"},
 		{Key: "", Desc: ""},

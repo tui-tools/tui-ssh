@@ -205,7 +205,7 @@ func pickOption(t *testing.T, a *app, option string) {
 	t.Fatalf("the picker does not offer %q: %v", option, a.picker.Options)
 }
 
-// TestTheUsersScreenListsEveryKeyWithItsFingerprint: the screen `R` acts on has
+// TestTheUsersScreenListsEveryKeyWithItsFingerprint: the screen `x` acts on has
 // to name what it would remove, or removing by fingerprint is a guess.
 func TestTheUsersScreenListsEveryKeyWithItsFingerprint(t *testing.T) {
 	a, _ := newTestApp(t)
@@ -346,9 +346,9 @@ func TestRemovingAnAuthorizedKeyRewritesTheFile(t *testing.T) {
 	gone, kept := user.Keys[0], user.Keys[1]
 
 	selectUserRow(t, a, "deploy", gone.Fingerprint)
-	drain(t, a, press(a, "R"))
+	drain(t, a, press(a, "x"))
 	if a.mode != modeConfirm {
-		t.Fatalf("R did not open a confirm dialog (status: %s)", a.status)
+		t.Fatalf("x did not open a confirm dialog (status: %s)", a.status)
 	}
 	if !strings.Contains(a.confirm.Title, gone.Fingerprint) {
 		t.Errorf("the dialog does not name the key being removed: %q", a.confirm.Title)
@@ -386,26 +386,45 @@ func TestRemovingAnAuthorizedKeyRewritesTheFile(t *testing.T) {
 	}
 }
 
-// TestRemovingWithoutAKeySelectedIsAHint: R on an account with no key has
-// nothing to remove, and R anywhere else is still the re-read it has always
-// been.
+// TestRemovingWithoutAKeySelectedIsAHint: x on an account with no key has
+// nothing to remove.
 func TestRemovingWithoutAKeySelectedIsAHint(t *testing.T) {
 	a, backend := newTestApp(t)
 	selectUserRow(t, a, "backup", "")
-	drain(t, a, press(a, "R"))
+	drain(t, a, press(a, "x"))
 	if a.mode == modeConfirm {
 		t.Errorf("a dialog opened for an account with no key")
 	}
 	if !strings.Contains(a.status, "no key selected") {
 		t.Errorf("status = %q", a.status)
 	}
+	if len(backend.Ran()) != 0 {
+		t.Errorf("x with no key ran %v", backend.Ran())
+	}
+}
 
-	// On every other screen R re-reads the server, which is what it has always
-	// done and what the help still says.
+// TestRIsAlwaysTheReRead: R re-reads the server on every screen, the users
+// screen included, as it does in every tool of the family. It never opens a
+// removal, even with a key selected.
+func TestRIsAlwaysTheReRead(t *testing.T) {
+	a, backend := newTestApp(t)
+	user, ok := a.model.User("deploy")
+	if !ok || len(user.Keys) == 0 {
+		t.Fatalf("the sample deploy account has no key")
+	}
+	selectUserRow(t, a, "deploy", user.Keys[0].Fingerprint)
+	drain(t, a, press(a, "R"))
+	if a.mode == modeConfirm {
+		t.Errorf("R on the users screen opened %q", a.confirm.Title)
+	}
 	gotoScreen(t, a, screenConfig)
 	drain(t, a, press(a, "R"))
 	if a.mode == modeConfirm || len(backend.Ran()) != 0 {
 		t.Errorf("R on the config screen did something other than re-read")
+	}
+	after, _ := a.model.User("deploy")
+	if len(after.Keys) != len(user.Keys) {
+		t.Errorf("R changed the keys: %d before, %d after", len(user.Keys), len(after.Keys))
 	}
 }
 
