@@ -701,7 +701,7 @@ hidden; one below the minimum is marked as such and the tool still runs.
 | Binary | `ssh` |
 | Version read with | `ssh -V` |
 | Minimum | 8.2 |
-| Tested | `9.6`, `10.2`, `10.5` |
+| Tested | `9.6`, `10.2`, `10.5`, `10.6` |
 | Version-gated features | `include-dropins` (since 8.2), `kbd-interactive` (since 8.7) |
 
 | Versions | What changes |
