@@ -4,8 +4,11 @@
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/14368/badge)](https://www.bestpractices.dev/projects/14368)
 
 <!-- stability:start -->
-> **Beta** tools may still change keys, flags or output before their 1.0;
-> stable tools follow semver. Pin versions, and report what breaks.
+> **Stable since v1.0.0.** Keys, flags and the `--check` JSON follow semver:
+> anything new arrives in a minor release, and a removal or a change of meaning
+> waits for the next major, announced one minor before. What stable means: [the
+> family's
+> bar](https://github.com/tui-tools/tui-kit/blob/main/docs/stability.md).
 <!-- stability:end -->
 
 A terminal UI for the machine's SSH server. It asks `sshd` what its
@@ -20,9 +23,9 @@ screen, in the [Omarchy](https://omarchy.org) visual style.
 
 ![The effective configuration](docs/screenshots/tui-ssh-main.png)
 
-> **Status: early, under validation.** An independent tool that follows the
-> Omarchy visual style; it is **not** part of the Omarchy project and not
-> endorsed by its maintainers. Expect rough edges.
+> An independent tool that follows the [Omarchy](https://omarchy.org) visual
+> style; it is not part of the Omarchy project and not endorsed by its
+> maintainers.
 
 ## Install
 
@@ -47,10 +50,14 @@ setup by hand — read it, or read the script first with `curl -fsSL
 https://pkgs.tui.tools/install.sh -o install.sh`:
 
 ```sh
-curl -fsSL -o /tmp/tui-tools.asc https://pkgs.tui.tools/pubkey.asc
-sudo pacman-key --add /tmp/tui-tools.asc
-sudo pacman-key --lsign-key \
-  "$(gpg --show-keys --with-colons /tmp/tui-tools.asc | awk -F: '/^fpr:/{print $10; exit}')"
+k="$(mktemp -d)/tui-tools.asc"
+curl -fsSL --proto =https --tlsv1.2 -o "$k" https://pkgs.tui.tools/pubkey.asc
+# Go on only if this prints "key OK": one key, fingerprint 767CFB337B01F32FFC073F3F389120B277E4FB44.
+[ "$(gpg --show-keys --with-colons "$k" \
+  | awk -F: '$1 == "pub" { p = 1; next } p && $1 == "fpr" { print $10; p = 0 }')" \
+  = 767CFB337B01F32FFC073F3F389120B277E4FB44 ] && echo "key OK" || { echo "WRONG KEY: stop here"; rm -f "$k"; }
+sudo pacman-key --add "$k"
+sudo pacman-key --lsign-key 767CFB337B01F32FFC073F3F389120B277E4FB44
 printf '[tui-tools]\nServer = https://pkgs.tui.tools/arch/$arch\n' \
   | sudo tee -a /etc/pacman.conf
 sudo pacman -Sy
@@ -81,9 +88,14 @@ setup by hand — read it, or read the script first with `curl -fsSL
 https://pkgs.tui.tools/install.sh -o install.sh`:
 
 ```sh
+k="$(mktemp -d)/tui-tools.asc"
+curl -fsSL --proto =https --tlsv1.2 -o "$k" https://pkgs.tui.tools/pubkey.asc
+# Go on only if this prints "key OK": one key, fingerprint 767CFB337B01F32FFC073F3F389120B277E4FB44.
+[ "$(gpg --show-keys --with-colons "$k" \
+  | awk -F: '$1 == "pub" { p = 1; next } p && $1 == "fpr" { print $10; p = 0 }')" \
+  = 767CFB337B01F32FFC073F3F389120B277E4FB44 ] && echo "key OK" || { echo "WRONG KEY: stop here"; rm -f "$k"; }
 sudo install -d -m 0755 /etc/apt/keyrings
-curl -fsSL https://pkgs.tui.tools/pubkey.asc \
-  | sudo gpg --dearmor -o /etc/apt/keyrings/tui-tools.gpg
+sudo gpg --batch --yes --dearmor -o /etc/apt/keyrings/tui-tools.gpg "$k"
 echo "deb [signed-by=/etc/apt/keyrings/tui-tools.gpg] https://pkgs.tui.tools/deb stable main" \
   | sudo tee /etc/apt/sources.list.d/tui-tools.list
 sudo apt update
@@ -114,9 +126,21 @@ setup by hand — read it, or read the script first with `curl -fsSL
 https://pkgs.tui.tools/install.sh -o install.sh`:
 
 ```sh
-sudo rpm --import https://pkgs.tui.tools/pubkey.asc
-sudo curl -fsSL -o /etc/yum.repos.d/tui-tools.repo https://pkgs.tui.tools/rpm/tui-tools.repo
-sudo dnf makecache
+k="$(mktemp -d)/tui-tools.asc"
+curl -fsSL --proto =https --tlsv1.2 -o "$k" https://pkgs.tui.tools/pubkey.asc
+# Go on only if this prints "key OK": one key, fingerprint 767CFB337B01F32FFC073F3F389120B277E4FB44.
+[ "$(gpg --show-keys --with-colons "$k" \
+  | awk -F: '$1 == "pub" { p = 1; next } p && $1 == "fpr" { print $10; p = 0 }')" \
+  = 767CFB337B01F32FFC073F3F389120B277E4FB44 ] && echo "key OK" || { echo "WRONG KEY: stop here"; rm -f "$k"; }
+sudo install -d -m 0755 /etc/pki/rpm-gpg
+sudo install -m 0644 "$k" /etc/pki/rpm-gpg/RPM-GPG-KEY-tui-tools
+sudo rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-tui-tools
+printf '%s\n' '[tui-tools]' 'name=tui-tools' 'baseurl=https://pkgs.tui.tools/rpm/$basearch' \
+  'enabled=1' 'gpgcheck=1' 'repo_gpgcheck=1' \
+  'gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-tui-tools' 'metadata_expire=1h' \
+  | sudo tee /etc/yum.repos.d/tui-tools.repo
+# dnf asks to import the key for the index: answer y if it shows 767CFB337B01F32FFC073F3F389120B277E4FB44.
+sudo dnf makecache --repo tui-tools
 ```
 
 Then, and for every other tool in the family:
@@ -130,7 +154,7 @@ Upgrades then arrive with the rest of your system updates.
 ### Any distribution, static binary
 
 ```sh
-curl -fsSL https://github.com/tui-tools/tui-ssh/releases/download/v0.2.4/tui-ssh_0.2.4_linux_amd64.tar.gz | tar -xz tui-ssh
+curl -fsSL https://github.com/tui-tools/tui-ssh/releases/download/v1.0.0/tui-ssh_1.0.0_linux_amd64.tar.gz | tar -xz tui-ssh
 sudo install -m0755 tui-ssh /usr/local/bin/tui-ssh
 ```
 
@@ -391,7 +415,7 @@ checked without following links: a symbolic link, something that is not a
 directory or a regular file, or a name owned by another account is refused, and
 the account's row on this screen says which.
 
-`R` on this screen removes the selected key, identified by its **fingerprint**
+`x` on this screen removes the selected key, identified by its **fingerprint**
 rather than by its position: the file is re-read, rewritten without that one
 line, and installed the same way. Everything else in it — the comments, the
 `from=` restrictions, the other keys, the order — is copied through byte for
@@ -399,8 +423,9 @@ byte, because unlike the drop-in this is not a file `tui-ssh` owns. Removing the
 last key leaves the file empty rather than deleting it, and the dialog says
 whose access ends and whether a password would still get in.
 
-`R` means re-read the server on every other screen, as it always has; `ctrl+r`
-does that from here too.
+`R` re-reads the server here as on every other screen; until 1.0 it removed
+the selected key on this one, and that moved to `x` so the key that refreshes
+never opens a removal.
 
 ## Usage
 
@@ -487,6 +512,45 @@ with `--demo` too, where it says so on the `mode` line.
 The bug form asks for this block first — see
 [`.github/ISSUE_TEMPLATE/bug_report.yml`](.github/ISSUE_TEMPLATE/bug_report.yml).
 
+## Stability
+
+tui-ssh is stable since 1.0.0 and follows [semver](https://semver.org). What
+is frozen is the contract a script or a habit can depend on:
+
+- the keys: every key the help screen (`?`) and [Keys](#keys) list, on the six
+  screens and the detail screen, and in the setting editor (`tab`, `←`/`→`,
+  `space`, `enter`, `esc`). `R` re-reads on every screen and `x` removes the
+  selected key on the users screen; before 1.0 `R` did both, and the split is
+  the one change made for the freeze;
+- the flags: `--check`, `--demo`, `--demo-idle`, `--report`, `--sudo`,
+  `--theme` and `--version`, and the `TUI_SSH_*` configuration keys (`sudo`,
+  `theme`);
+- the `--check` JSON: every field name and what it means. At the top level:
+  `tool`, `version`, `backend`, `describe`, `effective`, `effectiveReason`,
+  `privsepMissing`, `privsepDir`, `verdicts`, `findings`, `risks`, `sessions`,
+  `failedLogins`, `invalidUsers`, `accepted`, `authWindow`, `hostKeys`,
+  `accounts`, `authorizedKeys`, `unit`, `active`, `enabled`, `socket`,
+  `socketActivated` and `compat`. Each `verdicts` row: `key`, `value`,
+  `verdict` (`ok`, `warn` or `risk`), `source` and `note`. Each `hostKeys`
+  row: `type`, `bits`, `fingerprint`, `verdict`. `compat`: `backend`,
+  `version`, `minimum`, `status`, and `notes` and `detail` when there are any.
+  A field that is left out when empty is left out on purpose, and that is part
+  of its meaning.
+
+The `model` field is not part of the contract: it is the parsed state in full,
+a diagnostic dump whose shape follows the code. A script that needs something
+from it should ask for a field of its own.
+
+A minor release only adds: new keys, new flags, new `--check` fields. Removing
+or renaming one, or changing what it means, happens only in a major release,
+and the minor release before that major warns about it, on screen and in
+`--check`. The commands a key previews may gain a safer flag or a check in a
+minor release; what they change on the machine does not. The bar a tool in the
+family meets to be called stable is in [tui-kit's stability
+page](https://github.com/tui-tools/tui-kit/blob/main/docs/stability.md); the
+real machine this tool drove for it is described in
+[docs/real-case-1.0.md](docs/real-case-1.0.md).
+
 ## What it can do to your machine
 
 Every one of these is previewed and confirmed first.
@@ -496,7 +560,7 @@ Every one of these is previewed and confirmed first.
 | `e` | `sshd -t -f <staged file>` (a read, before the question), then `install -m 600 <staged file> /etc/ssh/sshd_config.d/90-tui-ssh.conf` and `systemctl reload <unit>` |
 | `m` | the same three, with the keyword written inside a `Match` block |
 | `A` | `ssh-keygen -l -f <staged file>` (a read, before the question), then `runuser -u <user> -- install -d -m 700 <home>/.ssh`, `runuser -u <user> -- install -m 600 /dev/null <home>/.ssh/authorized_keys` when there is none yet, and `runuser -u <user> -- tee <home>/.ssh/authorized_keys` |
-| `R` | on the users screen: `runuser -u <user> -- tee <home>/.ssh/authorized_keys`, with the selected key rewritten out |
+| `x` | on the users screen: `runuser -u <user> -- tee <home>/.ssh/authorized_keys`, with the selected key rewritten out |
 | `t` | `loginctl terminate-session <id>` |
 | `b` | `ufw deny from <address>`, and only when ufw is the active firewall |
 | `K` | `install -d -m 700 /etc/ssh/tui-ssh-hostkeys-<stamp>`, `mv -- <the key files> <that directory>/`, `ssh-keygen -A`, `systemctl reload <unit>` |
@@ -527,13 +591,13 @@ It is read from systemd, not assumed.
 | `e` | Change a setting, written to the drop-in with a diff to confirm |
 | `m` | Change a setting inside a `Match` block, for some connections only |
 | `A` | Add a public key to an account's `authorized_keys` |
-| `R` | On the users screen, remove the selected key; elsewhere, re-read the server |
+| `x` | On the users screen, remove the selected key |
 | `t` | End the selected session |
 | `b` | Block the selected address at the firewall |
 | `w` | Switch the log window between 24 hours and 7 days |
 | `K` | Regenerate the host keys, old ones moved aside |
 | `r` | Reload the SSH service |
-| `ctrl+r` | Re-read the server, from any screen |
+| `R` / `ctrl+r` | Re-read the server, from any screen |
 | `?` | Help |
 | `q` | Quit |
 
@@ -546,7 +610,7 @@ block's criteria.
 
 ![Help](docs/screenshots/tui-ssh-help.png)
 
-## What v0.1 can do
+## What it can do
 
 - Read the effective configuration from `sshd -T`, falling back to parsing
   `/etc/ssh/sshd_config` and its `Include` tree when that is not permitted, and
@@ -598,7 +662,7 @@ block's criteria.
   sshd rejects would fail every new connection.
 - Follow the active Omarchy theme, and respect `NO_COLOR`.
 
-## What v0.1 cannot do
+## What it cannot do
 
 - **It does not edit `sshd_config`.** One drop-in, one keyword at a time, from a
   closed set. Everything else is a job for `$EDITOR` — and the file view tells
